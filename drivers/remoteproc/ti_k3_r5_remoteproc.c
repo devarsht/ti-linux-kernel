@@ -1727,7 +1727,8 @@ static int k3_r5_probe(struct platform_device *pdev)
 		cluster->mode = CLUSTER_MODE_SINGLECPU;
 
 	num_cores = of_get_available_child_count(np);
-	if (num_cores != 2) {
+
+	if (num_cores != 2 && ret != -EINVAL) {
 		dev_err(dev, "MCU cluster requires both R5F cores to be enabled, num_cores = %d\n",
 			num_cores);
 		return -ENODEV;

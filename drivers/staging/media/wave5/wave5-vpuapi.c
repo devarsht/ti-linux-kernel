@@ -116,12 +116,16 @@ int wave5_vpu_dec_open(struct vpu_instance *vpu_inst, struct dec_open_param *pop
 	if (ret)
 		return ret;
 
-	if (!wave5_vpu_is_init(vpu_dev))
+	if (!wave5_vpu_is_init(vpu_dev)) {
+		mutex_unlock(&vpu_dev->hw_lock);
 		return -ENODEV;
+	}
 
 	vpu_inst->codec_info = kzalloc(sizeof(*vpu_inst->codec_info), GFP_KERNEL);
-	if (!vpu_inst->codec_info)
+	if (!vpu_inst->codec_info) {
+		mutex_unlock(&vpu_dev->hw_lock);
 		return -ENOMEM;
+	}
 
 	p_dec_info = &vpu_inst->codec_info->dec_info;
 	memcpy(&p_dec_info->open_param, pop, sizeof(struct dec_open_param));
@@ -169,7 +173,7 @@ int wave5_vpu_dec_close(struct vpu_instance *inst, u32 *fail_res)
 
 	ret = wave5_vpu_dec_fini_seq(inst, fail_res);
 	if (ret) {
-		dev_warn(inst->dev->dev, "dec sec end timed out\n");
+		dev_warn(inst->dev->dev, "dec seq end timed out\n");
 
 		if (*fail_res == WAVE5_SYSERR_VPU_STILL_RUNNING) {
 			mutex_unlock(&vpu_dev->hw_lock);
@@ -697,12 +701,16 @@ int wave5_vpu_enc_open(struct vpu_instance *vpu_inst, struct enc_open_param *pop
 	if (ret)
 		return ret;
 
-	if (!wave5_vpu_is_init(vpu_dev))
+	if (!wave5_vpu_is_init(vpu_dev)) {
+		mutex_unlock(&vpu_dev->hw_lock);
 		return -ENODEV;
+	}
 
 	vpu_inst->codec_info = kzalloc(sizeof(*vpu_inst->codec_info), GFP_KERNEL);
-	if (!vpu_inst->codec_info)
+	if (!vpu_inst->codec_info) {
+		mutex_unlock(&vpu_dev->hw_lock);
 		return -ENOMEM;
+	}
 
 	p_enc_info = &vpu_inst->codec_info->enc_info;
 	p_enc_info->open_param = *pop;

@@ -112,10 +112,7 @@ static const struct vpu_format *wave5_find_vpu_fmt_by_idx(unsigned int idx, enum
 static void wave5_handle_bitstream_buffer(struct vpu_instance *inst)
 {
 	struct v4l2_m2m_buffer *v4l2_m2m_buf = NULL;
-	unsigned long flags;
 	int ret;
-
-	spin_lock_irqsave(&inst->bitstream_lock, flags);
 
 	v4l2_m2m_for_each_src_buf(inst->v4l2_fh.m2m_ctx, v4l2_m2m_buf) {
 		struct vb2_v4l2_buffer *vbuf = &v4l2_m2m_buf->vb;
@@ -165,17 +162,11 @@ static void wave5_handle_bitstream_buffer(struct vpu_instance *inst)
 		if (inst->state == VPU_INST_STATE_WAIT_BUF)
 			inst->state = VPU_INST_STATE_PIC_RUN;
 	}
-
-	spin_unlock_irqrestore(&inst->bitstream_lock, flags);
 }
 
 static void wave5_handle_src_buffer(struct vpu_instance *inst)
 {
 	struct vb2_v4l2_buffer *src_buf;
-
-	unsigned long flags;
-
-	spin_lock_irqsave(&inst->bitstream_lock, flags);
 
 	src_buf = v4l2_m2m_next_src_buf(inst->v4l2_fh.m2m_ctx);
 	if (src_buf) {
@@ -188,7 +179,6 @@ static void wave5_handle_src_buffer(struct vpu_instance *inst)
 			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
 		}
 	}
-	spin_unlock_irqrestore(&inst->bitstream_lock, flags);
 }
 
 static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned int width,
@@ -259,13 +249,10 @@ static void wave5_vpu_dec_start_decode(struct vpu_instance *inst)
 static void wave5_vpu_dec_stop_decode(struct vpu_instance *inst)
 {
 	unsigned int i;
-	unsigned long flags;
 
 	inst->state = VPU_INST_STATE_STOP;
 
-	spin_lock_irqsave(&inst->bitstream_lock, flags);
 	wave5_vpu_dec_update_bitstream_buffer(inst, 0);
-	spin_unlock_irqrestore(&inst->bitstream_lock, flags);
 
 	for (i = 0; i < inst->min_dst_frame_buf_count; i++)
 		wave5_vpu_dec_clr_disp_flag(inst, i);
@@ -285,8 +272,6 @@ static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
 	if (irq_status & BIT(INT_WAVE5_BSBUF_EMPTY)) {
 		dev_dbg(inst->dev->dev, "bitstream EMPTY!!!!\n");
 		inst->state = VPU_INST_STATE_WAIT_BUF;
-		wave5_handle_src_buffer(inst);
-		wave5_handle_bitstream_buffer(inst);
 	}
 
 	if (!(irq_status & BIT(INT_WAVE5_DEC_PIC)))
@@ -707,7 +692,6 @@ static int wave5_vpu_dec_decoder_cmd(struct file *file, void *fh, struct v4l2_de
 {
 	struct vpu_instance *inst = wave5_to_vpu_inst(fh);
 	int ret;
-	unsigned long flags;
 
 	dev_dbg(inst->dev->dev, "decoder command : %d\n", dc->cmd);
 
@@ -722,9 +706,7 @@ static int wave5_vpu_dec_decoder_cmd(struct file *file, void *fh, struct v4l2_de
 	case V4L2_DEC_CMD_STOP:
 		inst->state = VPU_INST_STATE_STOP;
 
-		spin_lock_irqsave(&inst->bitstream_lock, flags);
 		wave5_vpu_dec_update_bitstream_buffer(inst, 0);
-		spin_unlock_irqrestore(&inst->bitstream_lock, flags);
 		break;
 	case V4L2_DEC_CMD_START:
 		break;
@@ -851,7 +833,7 @@ static void wave5_set_default_dec_openparam(struct dec_open_param *open_param)
 
 static int wave5_vpu_dec_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
 				     unsigned int *num_planes, unsigned int sizes[],
-			 struct device *alloc_devs[])
+				     struct device *alloc_devs[])
 {
 	struct vpu_instance *inst = vb2_get_drv_priv(q);
 	struct v4l2_pix_format_mplane inst_format =
@@ -1272,8 +1254,6 @@ static int wave5_vpu_open_dec(struct file *filp)
 	inst->dev = dev;
 	inst->type = VPU_INST_TYPE_DEC;
 	inst->ops = &wave5_vpu_dec_inst_ops;
-
-	spin_lock_init(&inst->bitstream_lock);
 
 	v4l2_fh_init(&inst->v4l2_fh, vdev);
 	filp->private_data = &inst->v4l2_fh;

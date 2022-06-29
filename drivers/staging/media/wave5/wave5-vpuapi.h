@@ -1082,7 +1082,6 @@ struct vpu_instance {
 	bool cbcr_interleave;
 	bool nv21;
 
-	spinlock_t bitstream_lock; /* lock the src buf queue of the m2m ctx */
 	struct vpu_buf bitstream_vbuf;
 	bool thumbnail_mode;
 

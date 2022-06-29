@@ -998,6 +998,7 @@ int wave5_vpu_decode(struct vpu_instance *vpu_inst, struct dec_param *option, u3
 	bs_option = 0;
 	switch (p_open_param->bitstream_mode) {
 	case BS_MODE_INTERRUPT:
+		bs_option = BSOPTION_ENABLE_EXPLICIT_END;
 		break;
 	case BS_MODE_PIC_END:
 		bs_option = BSOPTION_ENABLE_EXPLICIT_END;

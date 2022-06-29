@@ -45,23 +45,13 @@ int wave5_vpu_wait_interrupt(struct vpu_instance *inst, unsigned int timeout)
 static void wave5_vpu_get_interrupt_for_inst(struct vpu_instance *inst, u32 status)
 {
 	struct vpu_device *dev = inst->dev;
-	u32 bs_empty;
 	u32 seq_done;
 	u32 cmd_done;
 	int val;
 
-	bs_empty = wave5_vdi_readl(dev, W5_RET_BS_EMPTY_INST);
 	seq_done = wave5_vdi_readl(dev, W5_RET_SEQ_DONE_INSTANCE_INFO);
 	cmd_done = wave5_vdi_readl(dev, W5_RET_QUEUE_CMD_DONE_INST);
 
-	if (status & BIT(INT_WAVE5_BSBUF_EMPTY)) {
-		if (bs_empty & BIT(inst->id)) {
-			bs_empty &= ~BIT(inst->id);
-			wave5_vdi_write_register(dev, W5_RET_BS_EMPTY_INST, bs_empty);
-			val = BIT(INT_WAVE5_BSBUF_EMPTY);
-			kfifo_in(&inst->irq_status, &val, sizeof(int));
-		}
-	}
 	if (status & BIT(INT_WAVE5_INIT_SEQ)) {
 		if (seq_done & BIT(inst->id)) {
 			seq_done &= ~BIT(inst->id);

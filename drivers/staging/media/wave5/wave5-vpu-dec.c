@@ -158,9 +158,6 @@ static void wave5_handle_bitstream_buffer(struct vpu_instance *inst)
 		}
 
 		vpu_buf->consumed = true;
-
-		if (inst->state == VPU_INST_STATE_WAIT_BUF)
-			inst->state = VPU_INST_STATE_PIC_RUN;
 	}
 }
 
@@ -222,7 +219,7 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 		pix_mp->width = width;
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = 0;
-		pix_mp->plane_fmt[0].sizeimage = width * height / 2;
+		pix_mp->plane_fmt[0].sizeimage = width * height;
 		memset(&pix_mp->plane_fmt[0].reserved, 0, sizeof(pix_mp->plane_fmt[0].reserved));
 		break;
 	}
@@ -269,14 +266,6 @@ static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
 	if (kfifo_out(&inst->irq_status, &irq_status, sizeof(int)))
 		wave5_vpu_clear_interrupt_ex(inst, irq_status);
 
-	if (irq_status & BIT(INT_WAVE5_BSBUF_EMPTY)) {
-		dev_dbg(inst->dev->dev, "bitstream EMPTY!!!!\n");
-		wave5_handle_src_buffer(inst);
-		inst->state = VPU_INST_STATE_WAIT_BUF;
-	}
-
-	if (!(irq_status & BIT(INT_WAVE5_DEC_PIC)))
-		return;
 	ret = wave5_vpu_dec_get_output_info(inst, &dec_output_info);
 	if (ret) {
 		v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);

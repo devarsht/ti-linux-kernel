@@ -14,61 +14,61 @@ static const struct vpu_format wave5_vpu_enc_fmt_list[2][6] = {
 	[VPU_FMT_TYPE_CODEC] = {
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_HEVC,
-			.max_width = 8192,
-			.min_width = 8,
-			.max_height = 8192,
-			.min_height = 8,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_H264,
-			.max_width = 8192,
-			.min_width = 32,
-			.max_height = 8192,
-			.min_height = 32,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 	},
 	[VPU_FMT_TYPE_RAW] = {
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_YUV420,
-			.max_width = 8192,
-			.min_width = 8,
-			.max_height = 8192,
-			.min_height = 8,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV12,
-			.max_width = 8192,
-			.min_width = 8,
-			.max_height = 8192,
-			.min_height = 8,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV21,
-			.max_width = 8192,
-			.min_width = 8,
-			.max_height = 8192,
-			.min_height = 8,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_YUV420M,
-			.max_width = 8192,
-			.min_width = 8,
-			.max_height = 8192,
-			.min_height = 8,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV12M,
-			.max_width = 8192,
-			.min_width = 8,
-			.max_height = 8192,
-			.min_height = 8,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV21M,
-			.max_width = 8192,
-			.min_width = 8,
-			.max_height = 8192,
-			.min_height = 8,
+			.max_width = W5_MAX_ENC_PIC_WIDTH,
+			.min_width = W5_MIN_ENC_PIC_WIDTH,
+			.max_height = W5_MAX_ENC_PIC_HEIGHT,
+			.min_height = W5_MIN_ENC_PIC_HEIGHT,
 		},
 	}
 };
@@ -156,14 +156,14 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 	case V4L2_PIX_FMT_YUV420:
 	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV21:
-		pix_mp->width = round_up(width, 32);
+		pix_mp->width = width;
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = round_up(width, 32) * height * 3 / 2;
 		memset(&pix_mp->plane_fmt[0].reserved, 0, sizeof(pix_mp->plane_fmt[0].reserved));
 		break;
 	case V4L2_PIX_FMT_YUV420M:
-		pix_mp->width = round_up(width, 32);
+		pix_mp->width = width;
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = round_up(width, 32) * height;
@@ -177,7 +177,7 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 		break;
 	case V4L2_PIX_FMT_NV12M:
 	case V4L2_PIX_FMT_NV21M:
-		pix_mp->width = round_up(width, 32);
+		pix_mp->width = width;
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = round_up(width, 32) * height;
@@ -187,10 +187,10 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 		memset(&pix_mp->plane_fmt[1].reserved, 0, sizeof(pix_mp->plane_fmt[1].reserved));
 		break;
 	default:
-		pix_mp->width = round_up(width, 32);
+		pix_mp->width = width;
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = 0;
-		pix_mp->plane_fmt[0].sizeimage = round_up(width, 32) * height;
+		pix_mp->plane_fmt[0].sizeimage = width * height;
 		memset(&pix_mp->plane_fmt[0].reserved, 0, sizeof(pix_mp->plane_fmt[0].reserved));
 		break;
 	}
@@ -214,8 +214,9 @@ static void wave5_vpu_enc_start_encode(struct vpu_instance *inst)
 		struct vpu_buffer *dst_vbuf;
 		struct frame_buffer frame_buf;
 		struct enc_param pic_param;
-		u32 luma_size = (inst->dst_fmt.width * inst->dst_fmt.height);
-		u32 chroma_size = ((inst->dst_fmt.width / 2) * (inst->dst_fmt.height / 2));
+		u32 stride = ALIGN(inst->dst_fmt.width, 32);
+		u32 luma_size = (stride * inst->dst_fmt.height);
+		u32 chroma_size = ((stride / 2) * (inst->dst_fmt.height / 2));
 		u32 fail_res;
 
 		memset(&pic_param, 0, sizeof(struct enc_param));
@@ -262,7 +263,7 @@ static void wave5_vpu_enc_start_encode(struct vpu_instance *inst)
 				frame_buf.buf_cr =
 					vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 2);
 			}
-			frame_buf.stride = inst->dst_fmt.width;
+			frame_buf.stride = stride;
 			pic_param.src_idx = src_buf->vb2_buf.index;
 		}
 
@@ -650,8 +651,8 @@ static int wave5_vpu_enc_g_selection(struct file *file, void *fh, struct v4l2_se
 		case V4L2_SEL_TGT_CROP_BOUNDS:
 			s->r.left = 0;
 			s->r.top = 0;
-			s->r.width = inst->src_fmt.width;
-			s->r.height = inst->src_fmt.height;
+			s->r.width = inst->dst_fmt.width;
+			s->r.height = inst->dst_fmt.height;
 			break;
 		case V4L2_SEL_TGT_CROP:
 			s->r.left = 0;
@@ -1193,7 +1194,7 @@ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buff
 		*num_buffers = inst->src_buf_count;
 		non_linear_num = inst->min_dst_buf_count;
 
-		fb_stride = inst->dst_fmt.width;
+		fb_stride = ALIGN(inst->dst_fmt.width, 32);
 		fb_height = ALIGN(inst->dst_fmt.height, 32);
 
 		for (i = 0; i < non_linear_num; i++) {

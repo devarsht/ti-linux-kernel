@@ -241,34 +241,18 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 static void wave5_vpu_dec_start_decode(struct vpu_instance *inst)
 {
 	struct dec_param pic_param;
-	u32 max_cmd_q = 0;
 	int ret;
+	u32 fail_res = 0;
 
 	memset(&pic_param, 0, sizeof(struct dec_param));
 
-	if (inst->state == VPU_INST_STATE_STOP) {
-		max_cmd_q = 1;
-	} else {
-		max_cmd_q = (inst->min_src_frame_buf_count < COMMAND_QUEUE_DEPTH) ?
-			inst->min_src_frame_buf_count : COMMAND_QUEUE_DEPTH;
-	}
+	ret = wave5_vpu_dec_start_one_frame(inst, &pic_param, &fail_res);
+	if (ret && fail_res != WAVE5_SYSERR_QUEUEING_FAIL) {
+		struct vb2_v4l2_buffer *src_buf;
 
-	while (max_cmd_q) {
-		u32 fail_res = 0;
-
-		ret = wave5_vpu_dec_start_one_frame(inst, &pic_param, &fail_res);
-		if (ret) {
-			struct vb2_v4l2_buffer *src_buf;
-
-			if (fail_res == WAVE5_SYSERR_QUEUEING_FAIL)
-				break;
-
-			src_buf = v4l2_m2m_src_buf_remove(inst->v4l2_fh.m2m_ctx);
-			inst->state = VPU_INST_STATE_STOP;
-			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
-			break;
-		}
-		max_cmd_q--;
+		src_buf = v4l2_m2m_src_buf_remove(inst->v4l2_fh.m2m_ctx);
+		inst->state = VPU_INST_STATE_STOP;
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
 	}
 }
 
@@ -286,7 +270,7 @@ static void wave5_vpu_dec_stop_decode(struct vpu_instance *inst)
 	for (i = 0; i < inst->min_dst_frame_buf_count; i++)
 		wave5_vpu_dec_clr_disp_flag(inst, i);
 
-	v4l2_m2m_job_finish(inst->dev->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
+	v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
 }
 
 static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
@@ -295,7 +279,7 @@ static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
 	int ret;
 	int irq_status;
 
-	if (kfifo_out(&inst->dev->irq_status, &irq_status, sizeof(int)))
+	if (kfifo_out(&inst->irq_status, &irq_status, sizeof(int)))
 		wave5_vpu_clear_interrupt_ex(inst, irq_status);
 
 	if (irq_status & BIT(INT_WAVE5_BSBUF_EMPTY)) {
@@ -309,7 +293,7 @@ static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
 		return;
 	ret = wave5_vpu_dec_get_output_info(inst, &dec_output_info);
 	if (ret) {
-		v4l2_m2m_job_finish(inst->dev->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
+		v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
 		return;
 	}
 	if (dec_output_info.index_frame_decoded == DECODED_IDX_FLAG_NO_FB &&
@@ -382,7 +366,7 @@ static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
 			inst->state = VPU_INST_STATE_PIC_RUN;
 			v4l2_event_queue_fh(&inst->v4l2_fh, &vpu_event_eos);
 
-			v4l2_m2m_job_finish(inst->dev->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
+			v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
 		}
 	}
 }
@@ -1019,6 +1003,8 @@ static void wave5_vpu_dec_start_streaming_inst_open(struct vb2_queue *q, unsigne
 					     initial_info.pic_height);
 		}
 		v4l2_event_queue_fh(&inst->v4l2_fh, &vpu_event_src_ch);
+
+		wave5_handle_src_buffer(inst);
 	}
 }
 
@@ -1244,6 +1230,33 @@ static const struct vpu_instance_ops wave5_vpu_dec_inst_ops = {
 	.finish_process = wave5_vpu_dec_finish_decode,
 };
 
+static void wave5_vpu_dec_device_run(void *priv)
+{
+}
+
+static int wave5_vpu_dec_job_ready(void *priv)
+{
+	struct vpu_instance *inst = priv;
+
+	if (inst->state == VPU_INST_STATE_STOP)
+		return 0;
+
+	return 1;
+}
+
+static void wave5_vpu_dec_job_abort(void *priv)
+{
+	struct vpu_instance *inst = priv;
+
+	inst->ops->stop_process(inst);
+}
+
+static const struct v4l2_m2m_ops wave5_vpu_dec_m2m_ops = {
+	.device_run = wave5_vpu_dec_device_run,
+	.job_ready = wave5_vpu_dec_job_ready,
+	.job_abort = wave5_vpu_dec_job_abort,
+};
+
 static int wave5_vpu_open_dec(struct file *filp)
 {
 	struct video_device *vdev = video_devdata(filp);
@@ -1266,11 +1279,21 @@ static int wave5_vpu_open_dec(struct file *filp)
 	filp->private_data = &inst->v4l2_fh;
 	v4l2_fh_add(&inst->v4l2_fh);
 
+	INIT_LIST_HEAD(&inst->list);
+	list_add_tail(&inst->list, &dev->instances);
+
+	inst->v4l2_m2m_dev = v4l2_m2m_init(&wave5_vpu_dec_m2m_ops);
+	if (IS_ERR(inst->v4l2_m2m_dev)) {
+		ret = PTR_ERR(inst->v4l2_m2m_dev);
+		dev_err(inst->dev->dev, "v4l2_m2m_init fail: %d\n", ret);
+		goto free_inst;
+	}
+
 	inst->v4l2_fh.m2m_ctx =
-		v4l2_m2m_ctx_init(dev->v4l2_m2m_dev, inst, wave5_vpu_dec_queue_init);
+		v4l2_m2m_ctx_init(inst->v4l2_m2m_dev, inst, wave5_vpu_dec_queue_init);
 	if (IS_ERR(inst->v4l2_fh.m2m_ctx)) {
 		ret = PTR_ERR(inst->v4l2_fh.m2m_ctx);
-		goto free_inst;
+		goto err_m2m_release;
 	}
 
 	v4l2_ctrl_handler_init(&inst->v4l2_ctrl_hdl, 10);
@@ -1282,7 +1305,7 @@ static int wave5_vpu_open_dec(struct file *filp)
 
 	if (inst->v4l2_ctrl_hdl.error) {
 		ret = -ENODEV;
-		goto free_inst;
+		goto err_m2m_release;
 	}
 
 	inst->v4l2_fh.ctrl_handler = &inst->v4l2_ctrl_hdl;
@@ -1295,8 +1318,25 @@ static int wave5_vpu_open_dec(struct file *filp)
 	inst->quantization = V4L2_QUANTIZATION_DEFAULT;
 	inst->xfer_func = V4L2_XFER_FUNC_DEFAULT;
 
+	init_completion(&inst->irq_done);
+	if (kfifo_alloc(&inst->irq_status, 16 * sizeof(int), GFP_KERNEL)) {
+		dev_err(inst->dev->dev, "failed to allocate fifo\n");
+		goto err_m2m_release;
+	}
+
+	inst->id = ida_alloc(&inst->dev->inst_ida, GFP_KERNEL);
+	if (inst->id < 0) {
+		dev_warn(inst->dev->dev, "unable to allocate instance ID: %d\n", inst->id);
+		ret = inst->id;
+		goto err_kfifo_free;
+	}
+
 	return 0;
 
+err_kfifo_free:
+	kfifo_free(&inst->irq_status);
+err_m2m_release:
+	v4l2_m2m_release(inst->v4l2_m2m_dev);
 free_inst:
 	kfree(inst);
 	return ret;
@@ -1333,8 +1373,12 @@ static int wave5_vpu_dec_release(struct file *filp)
 
 	wave5_vdi_free_dma_memory(inst->dev, &inst->bitstream_vbuf);
 	v4l2_ctrl_handler_free(&inst->v4l2_ctrl_hdl);
+	v4l2_m2m_release(inst->v4l2_m2m_dev);
 	v4l2_fh_del(&inst->v4l2_fh);
 	v4l2_fh_exit(&inst->v4l2_fh);
+	list_del_init(&inst->list);
+	kfifo_free(&inst->irq_status);
+	ida_free(&inst->dev->inst_ida, inst->id);
 	kfree(inst);
 
 	return 0;

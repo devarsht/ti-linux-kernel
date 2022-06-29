@@ -1020,14 +1020,12 @@ struct enc_info {
 struct vpu_device {
 	struct device *dev;
 	struct v4l2_device v4l2_dev;
-	struct v4l2_m2m_dev *v4l2_m2m_dev;
+	struct list_head instances;
 	struct video_device *video_dev_dec;
 	struct video_device *video_dev_enc;
 	struct mutex dev_lock; /* the lock for the src,dst v4l2 queues */
-	struct mutex	 hw_lock; /* lock hw configurations */
-	struct kfifo irq_status;
+	struct mutex hw_lock; /* lock hw configurations */
 	int irq;
-	struct completion irq_done;
 	enum product_id	 product;
 	struct vpu_attr	 attr;
 	struct vpu_buf common_mem;
@@ -1049,9 +1047,13 @@ struct vpu_instance_ops {
 };
 
 struct vpu_instance {
+	struct list_head list;
 	struct v4l2_fh v4l2_fh;
 	struct v4l2_ctrl_handler v4l2_ctrl_hdl;
 	struct vpu_device *dev;
+	struct v4l2_m2m_dev *v4l2_m2m_dev;
+	struct kfifo irq_status;
+	struct completion irq_done;
 
 	struct v4l2_pix_format_mplane src_fmt;
 	struct v4l2_pix_format_mplane dst_fmt;

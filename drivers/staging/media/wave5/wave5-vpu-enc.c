@@ -296,7 +296,7 @@ static void wave5_vpu_enc_stop_encode(struct vpu_instance *inst)
 {
 	inst->state = VPU_INST_STATE_STOP;
 
-	v4l2_m2m_job_finish(inst->dev->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
+	v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
 }
 
 static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
@@ -307,7 +307,7 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 	struct vb2_v4l2_buffer *dst_buf = NULL;
 	struct v4l2_m2m_buffer *v4l2_m2m_buf = NULL;
 
-	if (kfifo_out(&inst->dev->irq_status, &irq_status, sizeof(int)))
+	if (kfifo_out(&inst->irq_status, &irq_status, sizeof(int)))
 		wave5_vpu_clear_interrupt_ex(inst, irq_status);
 
 	ret = wave5_vpu_enc_get_output_info(inst, &enc_output_info);
@@ -348,7 +348,7 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 		inst->state = VPU_INST_STATE_PIC_RUN;
 		v4l2_event_queue_fh(&inst->v4l2_fh, &vpu_event_eos);
 
-		v4l2_m2m_job_finish(inst->dev->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
+		v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
 	} else {
 		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, enc_output_info.bitstream_size);
 
@@ -1365,6 +1365,36 @@ static const struct vpu_instance_ops wave5_vpu_enc_inst_ops = {
 	.finish_process = wave5_vpu_enc_finish_encode,
 };
 
+static void wave5_vpu_enc_device_run(void *priv)
+{
+	struct vpu_instance *inst = priv;
+
+	inst->ops->start_process(inst);
+}
+
+static int wave5_vpu_enc_job_ready(void *priv)
+{
+	struct vpu_instance *inst = priv;
+
+	if (inst->state == VPU_INST_STATE_STOP)
+		return 0;
+
+	return 1;
+}
+
+static void wave5_vpu_enc_job_abort(void *priv)
+{
+	struct vpu_instance *inst = priv;
+
+	inst->ops->stop_process(inst);
+}
+
+static const struct v4l2_m2m_ops wave5_vpu_enc_m2m_ops = {
+	.device_run = wave5_vpu_enc_device_run,
+	.job_ready = wave5_vpu_enc_job_ready,
+	.job_abort = wave5_vpu_enc_job_abort,
+};
+
 static int wave5_vpu_open_enc(struct file *filp)
 {
 	struct video_device *vdev = video_devdata(filp);
@@ -1387,11 +1417,21 @@ static int wave5_vpu_open_enc(struct file *filp)
 	filp->private_data = &inst->v4l2_fh;
 	v4l2_fh_add(&inst->v4l2_fh);
 
+	INIT_LIST_HEAD(&inst->list);
+	list_add_tail(&inst->list, &dev->instances);
+
+	inst->v4l2_m2m_dev = v4l2_m2m_init(&wave5_vpu_enc_m2m_ops);
+	if (IS_ERR(inst->v4l2_m2m_dev)) {
+		ret = PTR_ERR(inst->v4l2_m2m_dev);
+		dev_err(inst->dev->dev, "v4l2_m2m_init fail: %d\n", ret);
+		goto free_inst;
+	}
+
 	inst->v4l2_fh.m2m_ctx =
-		v4l2_m2m_ctx_init(dev->v4l2_m2m_dev, inst, wave5_vpu_enc_queue_init);
+		v4l2_m2m_ctx_init(inst->v4l2_m2m_dev, inst, wave5_vpu_enc_queue_init);
 	if (IS_ERR(inst->v4l2_fh.m2m_ctx)) {
 		ret = PTR_ERR(inst->v4l2_fh.m2m_ctx);
-		goto free_inst;
+		goto err_m2m_release;
 	}
 
 	v4l2_ctrl_handler_init(v4l2_ctrl_hdl, 30);
@@ -1429,7 +1469,7 @@ static int wave5_vpu_open_enc(struct file *filp)
 
 	if (v4l2_ctrl_hdl->error) {
 		ret = -ENODEV;
-		goto free_inst;
+		goto err_m2m_release;
 	}
 
 	inst->v4l2_fh.ctrl_handler = v4l2_ctrl_hdl;
@@ -1443,8 +1483,25 @@ static int wave5_vpu_open_enc(struct file *filp)
 	inst->xfer_func = V4L2_XFER_FUNC_DEFAULT;
 	inst->frame_rate = 30;
 
+	init_completion(&inst->irq_done);
+	if (kfifo_alloc(&inst->irq_status, 16 * sizeof(int), GFP_KERNEL)) {
+		dev_err(inst->dev->dev, "failed to allocate fifo\n");
+		goto err_m2m_release;
+	}
+
+	inst->id = ida_alloc(&inst->dev->inst_ida, GFP_KERNEL);
+	if (inst->id < 0) {
+		dev_warn(inst->dev->dev, "unable to allocate instance ID: %d\n", inst->id);
+		ret = inst->id;
+		goto err_kfifo_free;
+	}
+
 	return 0;
 
+err_kfifo_free:
+	kfifo_free(&inst->irq_status);
+err_m2m_release:
+	v4l2_m2m_release(inst->v4l2_m2m_dev);
 free_inst:
 	kfree(inst);
 	return ret;
@@ -1480,8 +1537,12 @@ static int wave5_vpu_enc_release(struct file *filp)
 		wave5_vdi_free_dma_memory(inst->dev, &inst->frame_vbuf[i]);
 
 	v4l2_ctrl_handler_free(&inst->v4l2_ctrl_hdl);
+	v4l2_m2m_release(inst->v4l2_m2m_dev);
 	v4l2_fh_del(&inst->v4l2_fh);
 	v4l2_fh_exit(&inst->v4l2_fh);
+	list_del_init(&inst->list);
+	kfifo_free(&inst->irq_status);
+	ida_free(&inst->dev->inst_ida, inst->id);
 	kfree(inst);
 
 	return 0;

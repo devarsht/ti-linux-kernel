@@ -76,11 +76,12 @@ err_out:
 	return ret;
 }
 
-static int wave5_check_dec_open_param(struct vpu_device *dev, struct dec_open_param *param)
+static int wave5_check_dec_open_param(struct vpu_instance *vpu_inst, struct dec_open_param *param)
 {
-	struct vpu_attr *p_attr;
+	struct vpu_attr *p_attr = &vpu_inst->dev->attr;
 
-	p_attr = &dev->attr;
+	if (vpu_inst->id > MAX_NUM_INSTANCE - 1)
+		return -EOPNOTSUPP;
 
 	if (param->bitstream_buffer % 8)
 		return -EINVAL;
@@ -107,7 +108,7 @@ int wave5_vpu_dec_open(struct vpu_instance *vpu_inst, struct dec_open_param *pop
 	int ret;
 	struct vpu_device *vpu_dev = vpu_inst->dev;
 
-	ret = wave5_check_dec_open_param(vpu_dev, pop);
+	ret = wave5_check_dec_open_param(vpu_inst, pop);
 	if (ret)
 		return ret;
 
@@ -122,12 +123,6 @@ int wave5_vpu_dec_open(struct vpu_instance *vpu_inst, struct dec_open_param *pop
 	if (!vpu_inst->codec_info)
 		return -ENOMEM;
 
-	vpu_inst->id = ida_alloc_max(&vpu_inst->dev->inst_ida, MAX_NUM_INSTANCE - 1, GFP_KERNEL);
-	if (vpu_inst->id < 0) {
-		dev_warn(vpu_inst->dev->dev, "unable to allocate instance ID: %d\n", vpu_inst->id);
-		ret = vpu_inst->id;
-		goto free_codec_info;
-	}
 	p_dec_info = &vpu_inst->codec_info->dec_info;
 	memcpy(&p_dec_info->open_param, pop, sizeof(struct dec_open_param));
 
@@ -144,14 +139,12 @@ int wave5_vpu_dec_open(struct vpu_instance *vpu_inst, struct dec_open_param *pop
 
 	ret = wave5_vpu_build_up_dec_param(vpu_inst, pop);
 	if (ret)
-		goto free_ida;
+		goto free_codec_info;
 
 	mutex_unlock(&vpu_dev->hw_lock);
 
 	return 0;
 
-free_ida:
-	ida_free(&vpu_inst->dev->inst_ida, vpu_inst->id);
 free_codec_info:
 	kfree(vpu_inst->codec_info);
 	mutex_unlock(&vpu_dev->hw_lock);
@@ -200,8 +193,6 @@ int wave5_vpu_dec_close(struct vpu_instance *inst, u32 *fail_res)
 
 	if (p_dec_info->vb_task.size)
 		wave5_vdi_free_dma_memory(vpu_dev, &p_dec_info->vb_task);
-
-	ida_free(&inst->dev->inst_ida, inst->id);
 
 	mutex_unlock(&vpu_dev->hw_lock);
 
@@ -713,24 +704,16 @@ int wave5_vpu_enc_open(struct vpu_instance *vpu_inst, struct enc_open_param *pop
 	if (!vpu_inst->codec_info)
 		return -ENOMEM;
 
-	vpu_inst->id = ida_alloc_max(&vpu_inst->dev->inst_ida, MAX_NUM_INSTANCE - 1, GFP_KERNEL);
-	if (vpu_inst->id < 0) {
-		dev_warn(vpu_inst->dev->dev, "unable to allocate instance ID: %d\n", vpu_inst->id);
-		ret = vpu_inst->id;
-		goto free_codec_info;
-	}
 	p_enc_info = &vpu_inst->codec_info->enc_info;
 	p_enc_info->open_param = *pop;
 
 	ret = wave5_vpu_build_up_enc_param(vpu_dev->dev, vpu_inst, pop);
 	if (ret)
-		goto free_ida;
+		goto free_codec_info;
 	mutex_unlock(&vpu_dev->hw_lock);
 
 	return 0;
 
-free_ida:
-	ida_free(&vpu_inst->dev->inst_ida, vpu_inst->id);
 free_codec_info:
 	kfree(vpu_inst->codec_info);
 	mutex_unlock(&vpu_dev->hw_lock);
@@ -784,8 +767,6 @@ int wave5_vpu_enc_close(struct vpu_instance *inst, u32 *fail_res)
 
 	if (p_enc_info->vb_task.size)
 		wave5_vdi_free_dma_memory(vpu_dev, &p_enc_info->vb_task);
-
-	ida_free(&inst->dev->inst_ida, inst->id);
 
 	mutex_unlock(&vpu_dev->hw_lock);
 

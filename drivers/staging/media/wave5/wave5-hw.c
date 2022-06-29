@@ -3225,6 +3225,9 @@ int wave5_vpu_enc_check_open_param(struct vpu_instance *vpu_inst, struct enc_ope
 	pic_width = pop->pic_width;
 	pic_height = pop->pic_height;
 
+	if (vpu_inst->id > MAX_NUM_INSTANCE - 1)
+		return -EOPNOTSUPP;
+
 	if (vpu_inst->std != W_HEVC_ENC && vpu_inst->std != W_AVC_ENC)
 		return -EOPNOTSUPP;
 

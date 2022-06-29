@@ -7,8 +7,8 @@
 
 #include "wave5-vpu.h"
 
-#define VPU_DEC_DEV_NAME "C&M VPU decoder"
-#define VPU_DEC_DRV_NAME "vpu-dec"
+#define VPU_DEC_DEV_NAME "C&M Wave5 VPU decoder"
+#define VPU_DEC_DRV_NAME "wave5-dec"
 #define V4L2_CID_VPU_THUMBNAIL_MODE (V4L2_CID_USER_BASE + 0x1001)
 
 static const struct vpu_format wave5_vpu_dec_fmt_list[2][6] = {
@@ -189,20 +189,16 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = width * height * 3 / 2;
-		memset(&pix_mp->plane_fmt[0].reserved, 0, sizeof(pix_mp->plane_fmt[0].reserved));
 		break;
 	case V4L2_PIX_FMT_YUV420M:
 		pix_mp->width = round_up(width, 32);
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = width * height;
-		memset(&pix_mp->plane_fmt[0].reserved, 0, sizeof(pix_mp->plane_fmt[0].reserved));
 		pix_mp->plane_fmt[1].bytesperline = round_up(width, 32) / 2;
 		pix_mp->plane_fmt[1].sizeimage = width * height / 4;
-		memset(&pix_mp->plane_fmt[1].reserved, 0, sizeof(pix_mp->plane_fmt[1].reserved));
 		pix_mp->plane_fmt[2].bytesperline = round_up(width, 32) / 2;
 		pix_mp->plane_fmt[2].sizeimage = width * height / 4;
-		memset(&pix_mp->plane_fmt[2].reserved, 0, sizeof(pix_mp->plane_fmt[2].reserved));
 		break;
 	case V4L2_PIX_FMT_NV12M:
 	case V4L2_PIX_FMT_NV21M:
@@ -210,17 +206,14 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = width * height;
-		memset(&pix_mp->plane_fmt[0].reserved, 0, sizeof(pix_mp->plane_fmt[0].reserved));
 		pix_mp->plane_fmt[1].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[1].sizeimage = width * height / 2;
-		memset(&pix_mp->plane_fmt[1].reserved, 0, sizeof(pix_mp->plane_fmt[1].reserved));
 		break;
 	default:
 		pix_mp->width = width;
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = 0;
 		pix_mp->plane_fmt[0].sizeimage = width * height;
-		memset(&pix_mp->plane_fmt[0].reserved, 0, sizeof(pix_mp->plane_fmt[0].reserved));
 		break;
 	}
 }
@@ -655,38 +648,19 @@ static int wave5_vpu_dec_s_selection(struct file *file, void *fh, struct v4l2_se
 {
 	struct vpu_instance *inst = wave5_to_vpu_inst(fh);
 
-	dev_dbg(inst->dev->dev, "type : %d | target : %d\n", s->type, s->target);
-
 	if (s->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 
 	if (s->target != V4L2_SEL_TGT_COMPOSE)
 		return -EINVAL;
 
-	dev_dbg(inst->dev->dev, "V4L2_SEL_TGT_COMPOSE w: %d h: %d\n", s->r.width, s->r.height);
-	inst->dst_fmt.width = s->r.width;
-	inst->dst_fmt.height = s->r.height;
+	dev_dbg(inst->dev->dev, "V4L2_SEL_TGT_COMPOSE w: %d h: %d\n",
+		s->r.width, s->r.height);
 
-	return 0;
-}
-
-static int wave5_vpu_dec_try_decoder_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *dc)
-{
-	struct vpu_instance *inst = wave5_to_vpu_inst(fh);
-
-	dev_dbg(inst->dev->dev, "decoder command : %d\n", dc->cmd);
-
-	if (dc->cmd != V4L2_DEC_CMD_STOP && dc->cmd != V4L2_DEC_CMD_START)
-		return -EINVAL;
-
-	dc->flags = 0;
-
-	if (dc->cmd == V4L2_DEC_CMD_STOP) {
-		dc->stop.pts = 0;
-	} else if (dc->cmd == V4L2_DEC_CMD_START) {
-		dc->start.speed = 0;
-		dc->start.format = V4L2_DEC_START_FMT_NONE;
-	}
+	s->r.left = 0;
+	s->r.top = 0;
+	s->r.width = inst->dst_fmt.width;
+	s->r.height = inst->dst_fmt.height;
 
 	return 0;
 }
@@ -698,8 +672,8 @@ static int wave5_vpu_dec_decoder_cmd(struct file *file, void *fh, struct v4l2_de
 
 	dev_dbg(inst->dev->dev, "decoder command : %d\n", dc->cmd);
 
-	ret = wave5_vpu_dec_try_decoder_cmd(file, fh, dc);
-	if (ret < 0)
+	ret = v4l2_m2m_ioctl_try_decoder_cmd(file, fh, dc);
+	if (ret)
 		return ret;
 
 	if (!wave5_vpu_both_queues_are_streaming(inst))
@@ -766,32 +740,12 @@ static const struct v4l2_ioctl_ops wave5_vpu_dec_ioctl_ops = {
 	.vidioc_streamon = v4l2_m2m_ioctl_streamon,
 	.vidioc_streamoff = v4l2_m2m_ioctl_streamoff,
 
-	.vidioc_try_decoder_cmd = wave5_vpu_dec_try_decoder_cmd,
+	.vidioc_try_decoder_cmd = v4l2_m2m_ioctl_try_decoder_cmd,
 	.vidioc_decoder_cmd = wave5_vpu_dec_decoder_cmd,
 
 	.vidioc_subscribe_event = wave5_vpu_dec_subscribe_event,
 	.vidioc_unsubscribe_event = v4l2_event_unsubscribe,
 };
-
-static int wave5_vpu_dec_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
-{
-	struct vpu_instance *inst = wave5_ctrl_to_vpu_inst(ctrl);
-
-	dev_dbg(inst->dev->dev, "name : %s\n", ctrl->name);
-
-	switch (ctrl->id) {
-	case V4L2_CID_MIN_BUFFERS_FOR_CAPTURE:
-		if (inst->state != VPU_INST_STATE_NONE && inst->state != VPU_INST_STATE_OPEN)
-			ctrl->val = inst->min_dst_buf_count;
-		break;
-	default:
-		return -EINVAL;
-	}
-
-	dev_dbg(inst->dev->dev, "value : %d\n", ctrl->val);
-
-	return 0;
-}
 
 static int wave5_vpu_dec_s_ctrl(struct v4l2_ctrl *ctrl)
 {
@@ -803,6 +757,8 @@ static int wave5_vpu_dec_s_ctrl(struct v4l2_ctrl *ctrl)
 	case V4L2_CID_VPU_THUMBNAIL_MODE:
 		inst->thumbnail_mode = ctrl->val;
 		break;
+	case V4L2_CID_MIN_BUFFERS_FOR_CAPTURE:
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -811,7 +767,6 @@ static int wave5_vpu_dec_s_ctrl(struct v4l2_ctrl *ctrl)
 }
 
 static const struct v4l2_ctrl_ops wave5_vpu_dec_ctrl_ops = {
-	.g_volatile_ctrl = wave5_vpu_dec_g_volatile_ctrl,
 	.s_ctrl = wave5_vpu_dec_s_ctrl,
 };
 
@@ -980,6 +935,7 @@ static void wave5_vpu_dec_start_streaming_open(struct vpu_instance *inst)
 			.type = V4L2_EVENT_SOURCE_CHANGE,
 			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
 		};
+		struct v4l2_ctrl *ctrl;
 
 		dev_dbg(inst->dev->dev, "width %d height %d profile %d | minbuffer : %u\n",
 			initial_info.pic_width, initial_info.pic_height,
@@ -988,6 +944,11 @@ static void wave5_vpu_dec_start_streaming_open(struct vpu_instance *inst)
 		inst->state = VPU_INST_STATE_INIT_SEQ;
 		inst->min_dst_buf_count = initial_info.min_frame_buffer_count + 1;
 		inst->dst_buf_count = inst->min_dst_buf_count;
+
+		ctrl = v4l2_ctrl_find(&inst->v4l2_ctrl_hdl,
+				      V4L2_CID_MIN_BUFFERS_FOR_CAPTURE);
+		if (ctrl)
+			v4l2_ctrl_s_ctrl(ctrl, inst->min_dst_buf_count);
 
 		if (initial_info.pic_width != inst->src_fmt.width ||
 		    initial_info.pic_height != inst->src_fmt.height) {
@@ -1037,6 +998,7 @@ static void wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
 			.type = V4L2_EVENT_SOURCE_CHANGE,
 			.u.src_change.changes = V4L2_EVENT_SRC_CH_RESOLUTION,
 		};
+		struct v4l2_ctrl *ctrl;
 
 		wave5_vpu_dec_give_command(inst, DEC_RESET_FRAMEBUF_INFO, NULL);
 		wave5_vpu_dec_give_command(inst, DEC_GET_SEQ_INFO, &initial_info);
@@ -1047,6 +1009,11 @@ static void wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
 
 		inst->min_dst_buf_count = initial_info.min_frame_buffer_count + 1;
 		inst->dst_buf_count = inst->min_dst_buf_count;
+
+		ctrl = v4l2_ctrl_find(&inst->v4l2_ctrl_hdl,
+				      V4L2_CID_MIN_BUFFERS_FOR_CAPTURE);
+		if (ctrl)
+			v4l2_ctrl_s_ctrl(ctrl, inst->min_dst_buf_count);
 
 		if (initial_info.pic_width != inst->src_fmt.width ||
 		    initial_info.pic_height != inst->src_fmt.height) {
@@ -1256,13 +1223,11 @@ static int wave5_vpu_dec_queue_init(void *priv, struct vb2_queue *src_vq, struct
 	int ret;
 
 	src_vq->type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
-	src_vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
+	src_vq->io_modes = VB2_MMAP | VB2_DMABUF;
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 	src_vq->ops = &wave5_vpu_dec_vb2_ops;
 	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	src_vq->buf_struct_size = sizeof(struct vpu_buffer);
-	src_vq->allow_zero_bytesused = 1;
-	src_vq->min_buffers_needed = 0;
 	src_vq->drv_priv = inst;
 	src_vq->lock = &inst->dev->dev_lock;
 	src_vq->dev = inst->dev->v4l2_dev.dev;
@@ -1271,13 +1236,11 @@ static int wave5_vpu_dec_queue_init(void *priv, struct vb2_queue *src_vq, struct
 		return ret;
 
 	dst_vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-	dst_vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
+	dst_vq->io_modes = VB2_MMAP | VB2_DMABUF;
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->ops = &wave5_vpu_dec_vb2_ops;
 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
 	dst_vq->buf_struct_size = sizeof(struct vpu_buffer);
-	dst_vq->allow_zero_bytesused = 1;
-	dst_vq->min_buffers_needed = 0;
 	dst_vq->drv_priv = inst;
 	dst_vq->lock = &inst->dev->dev_lock;
 	dst_vq->dev = inst->dev->v4l2_dev.dev;
@@ -1320,7 +1283,6 @@ static int wave5_vpu_open_dec(struct file *filp)
 	struct video_device *vdev = video_devdata(filp);
 	struct vpu_device *dev = video_drvdata(filp);
 	struct vpu_instance *inst = NULL;
-	struct v4l2_ctrl *ctrl;
 	int ret;
 
 	inst = kzalloc(sizeof(*inst), GFP_KERNEL);
@@ -1354,10 +1316,8 @@ static int wave5_vpu_open_dec(struct file *filp)
 
 	v4l2_ctrl_handler_init(&inst->v4l2_ctrl_hdl, 10);
 	v4l2_ctrl_new_custom(&inst->v4l2_ctrl_hdl, &wave5_vpu_thumbnail_mode, NULL);
-	ctrl = v4l2_ctrl_new_std(&inst->v4l2_ctrl_hdl, &wave5_vpu_dec_ctrl_ops,
-				 V4L2_CID_MIN_BUFFERS_FOR_CAPTURE, 1, 32, 1, 1);
-	if (ctrl)
-		ctrl->flags |= V4L2_CTRL_FLAG_VOLATILE;
+	v4l2_ctrl_new_std(&inst->v4l2_ctrl_hdl, &wave5_vpu_dec_ctrl_ops,
+			  V4L2_CID_MIN_BUFFERS_FOR_CAPTURE, 1, 32, 1, 1);
 
 	if (inst->v4l2_ctrl_hdl.error) {
 		ret = -ENODEV;

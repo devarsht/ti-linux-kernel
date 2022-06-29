@@ -958,7 +958,6 @@ struct dec_info {
 	int rotator_stride;
 	bool initial_info_obtained;
 	struct sec_axi_info sec_axi_info;
-	int seq_init_escape;
 	dma_addr_t user_data_buf_addr;
 	u32 user_data_enable;
 	int user_data_buf_size;

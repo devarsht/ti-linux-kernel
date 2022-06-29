@@ -17,14 +17,14 @@ static const struct vpu_format wave5_vpu_dec_fmt_list[2][6] = {
 			.v4l2_pix_fmt = V4L2_PIX_FMT_HEVC,
 			.max_width = 8192,
 			.min_width = 8,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 8,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_H264,
 			.max_width = 8192,
 			.min_width = 32,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 32,
 		},
 	},
@@ -33,42 +33,42 @@ static const struct vpu_format wave5_vpu_dec_fmt_list[2][6] = {
 			.v4l2_pix_fmt = V4L2_PIX_FMT_YUV420,
 			.max_width = 8192,
 			.min_width = 8,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 8,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV12,
 			.max_width = 8192,
 			.min_width = 8,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 8,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV21,
 			.max_width = 8192,
 			.min_width = 8,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 8,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_YUV420M,
 			.max_width = 8192,
 			.min_width = 8,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 8,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV12M,
 			.max_width = 8192,
 			.min_width = 8,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 8,
 		},
 		{
 			.v4l2_pix_fmt = V4L2_PIX_FMT_NV21M,
 			.max_width = 8192,
 			.min_width = 8,
-			.max_height = 8192,
+			.max_height = 4320,
 			.min_height = 8,
 		},
 	}
@@ -317,6 +317,8 @@ static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
 			dst_buf->vb2_buf.timestamp = inst->timestamp;
 			dst_buf->field = V4L2_FIELD_NONE;
 			v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+
+			dev_dbg(inst->dev->dev, "frame_cycle %8d\n", dec_output_info.frame_cycle);
 		} else if (dec_output_info.index_frame_display == DISPLAY_IDX_FLAG_SEQ_END) {
 			static const struct v4l2_event vpu_event_eos = {
 				.type = V4L2_EVENT_EOS

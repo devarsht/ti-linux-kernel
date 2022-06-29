@@ -409,6 +409,7 @@ int wave5_vpu_build_up_dec_param(struct vpu_instance *vpu_inst,
 	struct dma_vpu_buf *sram_vb;
 	struct vpu_device *vpu_dev = vpu_inst->dev;
 
+	p_dec_info->cycle_per_tick = 256;
 	switch (vpu_inst->std) {
 	case W_HEVC_DEC:
 		p_dec_info->seq_change_mask = SEQ_CHANGE_ENABLE_ALL_HEVC;
@@ -1267,7 +1268,8 @@ int wave5_vpu_dec_get_result(struct vpu_instance *vpu_inst, struct dec_output_in
 		vpu_dev->last_performance_cycles = result->dec_decode_end_tick;
 		if (vpu_dev->last_performance_cycles < result->dec_host_cmd_tick)
 			result->frame_cycle =
-				(result->dec_decode_end_tick - result->dec_host_cmd_tick);
+				(result->dec_decode_end_tick - result->dec_host_cmd_tick) *
+				p_dec_info->cycle_per_tick;
 	}
 	result->seek_cycle =
 		(result->dec_seek_end_tick - result->dec_seek_start_tick) *
@@ -1765,6 +1767,7 @@ int wave5_vpu_build_up_enc_param(struct device *dev, struct vpu_instance *vpu_in
 	u32 bs_endian;
 	struct vpu_device *vpu_dev = dev_get_drvdata(dev);
 
+	p_enc_info->cycle_per_tick = 256;
 	sram_vb = &vpu_dev->sram_buf;
 	p_enc_info->sec_axi_info.buf_base = sram_vb->daddr;
 	p_enc_info->sec_axi_info.buf_size = sram_vb->size;

@@ -201,8 +201,8 @@ static void wave5_vpu_enc_start_encode(struct vpu_instance *inst)
 	int ret;
 	u32 max_cmd_q = 0;
 
-	max_cmd_q = (inst->min_src_frame_buf_count < COMMAND_QUEUE_DEPTH) ?
-		inst->min_src_frame_buf_count : COMMAND_QUEUE_DEPTH;
+	max_cmd_q = (inst->src_buf_count < COMMAND_QUEUE_DEPTH) ?
+		inst->src_buf_count : COMMAND_QUEUE_DEPTH;
 
 	if (inst->state == VPU_INST_STATE_STOP)
 		max_cmd_q = 1;
@@ -834,7 +834,7 @@ static int wave5_vpu_enc_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
 	switch (ctrl->id) {
 	case V4L2_CID_MIN_BUFFERS_FOR_OUTPUT:
 		if (inst->state != VPU_INST_STATE_NONE && inst->state != VPU_INST_STATE_OPEN)
-			ctrl->val = inst->min_src_frame_buf_count;
+			ctrl->val = inst->min_src_buf_count;
 		break;
 	default:
 		return -EINVAL;
@@ -1182,13 +1182,16 @@ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buff
 		dev_dbg(inst->dev->dev, "min_frame_buffer : %d | min_source_buffer : %d\n",
 			initial_info.min_frame_buffer_count, initial_info.min_src_frame_count);
 		inst->state = VPU_INST_STATE_INIT_SEQ;
-		inst->min_src_frame_buf_count = initial_info.min_src_frame_count +
-						COMMAND_QUEUE_DEPTH;
-		inst->min_dst_frame_buf_count = initial_info.min_frame_buffer_count;
-		*num_buffers = inst->min_src_frame_buf_count;
-		dev_dbg(inst->dev->dev, "source buffer num : %d", *num_buffers);
+		inst->min_src_buf_count = initial_info.min_src_frame_count +
+					  COMMAND_QUEUE_DEPTH;
+		inst->min_dst_buf_count = initial_info.min_frame_buffer_count;
+		inst->src_buf_count = inst->min_src_buf_count;
 
-		non_linear_num = inst->min_dst_frame_buf_count;
+		if (*num_buffers > inst->src_buf_count)
+			inst->src_buf_count = *num_buffers;
+
+		*num_buffers = inst->src_buf_count;
+		non_linear_num = inst->min_dst_buf_count;
 
 		fb_stride = inst->dst_fmt.width;
 		fb_height = ALIGN(inst->dst_fmt.height, 32);
@@ -1222,7 +1225,7 @@ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buff
 
 	if (inst->state == VPU_INST_STATE_INIT_SEQ &&
 	    q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		*num_buffers = inst->min_src_frame_buf_count;
+		*num_buffers = inst->src_buf_count;
 		dev_dbg(inst->dev->dev, "source buffer num : %d", *num_buffers);
 	}
 
@@ -1533,7 +1536,7 @@ static int wave5_vpu_enc_release(struct file *filp)
 			dev_warn(inst->dev->dev, "close fail ret=%d\n", ret);
 	}
 
-	for (i = 0; i < inst->min_dst_frame_buf_count; i++)
+	for (i = 0; i < inst->min_dst_buf_count; i++)
 		wave5_vdi_free_dma_memory(inst->dev, &inst->frame_vbuf[i]);
 
 	v4l2_ctrl_handler_free(&inst->v4l2_ctrl_hdl);

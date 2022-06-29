@@ -1075,7 +1075,8 @@ struct vpu_instance {
 	} *codec_info;
 	struct frame_buffer frame_buf[MAX_REG_FRAME];
 	struct vpu_buf frame_vbuf[MAX_REG_FRAME];
-	u32 min_dst_frame_buf_count;
+	u32 min_dst_buf_count;
+	u32 dst_buf_count;
 	u32 queued_src_buf_num;
 	u32 queued_dst_buf_num;
 	u64 timestamp;
@@ -1085,7 +1086,8 @@ struct vpu_instance {
 	struct vpu_buf bitstream_vbuf;
 	bool thumbnail_mode;
 
-	unsigned int min_src_frame_buf_count;
+	unsigned int min_src_buf_count;
+	unsigned int src_buf_count;
 	unsigned int rot_angle;
 	unsigned int mirror_direction;
 	unsigned int profile;

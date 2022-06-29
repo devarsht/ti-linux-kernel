@@ -503,8 +503,7 @@ int wave5_vpu_dec_init_seq(struct vpu_instance *vpu_inst)
 	bs_option = 0;
 	switch (p_dec_info->open_param.bitstream_mode) {
 	case BS_MODE_INTERRUPT:
-		if (p_dec_info->seq_init_escape)
-			bs_option = BSOPTION_ENABLE_EXPLICIT_END;
+		bs_option = BSOPTION_ENABLE_EXPLICIT_END;
 		break;
 	case BS_MODE_PIC_END:
 		bs_option = BSOPTION_ENABLE_EXPLICIT_END;

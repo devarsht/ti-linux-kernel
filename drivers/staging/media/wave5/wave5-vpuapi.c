@@ -402,6 +402,27 @@ int wave5_vpu_dec_start_one_frame(struct vpu_instance *inst, struct dec_param *p
 	return ret;
 }
 
+int wave5_vpu_dec_set_rd_ptr(struct vpu_instance *inst, dma_addr_t addr, int update_wr_ptr)
+{
+	struct dec_info *p_dec_info = &inst->codec_info->dec_info;
+	int ret;
+	struct vpu_device *vpu_dev = inst->dev;
+
+	ret = mutex_lock_interruptible(&vpu_dev->hw_lock);
+	if (ret)
+		return ret;
+
+	ret = wave5_dec_set_rd_ptr(inst, addr);
+
+	p_dec_info->stream_rd_ptr = addr;
+	if (update_wr_ptr)
+		p_dec_info->stream_wr_ptr = addr;
+
+	mutex_unlock(&vpu_dev->hw_lock);
+
+	return ret;
+}
+
 int wave5_vpu_dec_get_output_info(struct vpu_instance *inst, struct dec_output_info *info)
 {
 	struct dec_info *p_dec_info;
@@ -639,8 +660,11 @@ int wave5_vpu_dec_get_output_info(struct vpu_instance *inst, struct dec_output_i
 	}
 
 	if (info->sequence_changed &&
-	    ((info->sequence_changed & SEQ_CHANGE_INTER_RES_CHANGE) != SEQ_CHANGE_INTER_RES_CHANGE))
+	    !(info->sequence_changed & SEQ_CHANGE_INTER_RES_CHANGE)) {
+		memcpy((void *)&p_dec_info->initial_info, (void *)&p_dec_info->new_seq_info,
+		       sizeof(struct dec_initial_info));
 		p_dec_info->initial_info.sequence_no++;
+	}
 
 err_out:
 	mutex_unlock(&vpu_dev->hw_lock);
@@ -666,20 +690,59 @@ int wave5_vpu_dec_clr_disp_flag(struct vpu_instance *inst, int index)
 	return ret;
 }
 
+int wave5_vpu_dec_set_disp_flag(struct vpu_instance *inst, int index)
+{
+	struct dec_info *p_dec_info = &inst->codec_info->dec_info;
+	int ret = 0;
+	struct vpu_device *vpu_dev = inst->dev;
+
+	if (index >= p_dec_info->num_fbs_for_wtl)
+		return -EINVAL;
+
+	ret = mutex_lock_interruptible(&vpu_dev->hw_lock);
+	if (ret)
+		return ret;
+	ret = wave5_dec_set_disp_flag(inst, index);
+	mutex_unlock(&vpu_dev->hw_lock);
+
+	return ret;
+}
+
 int wave5_vpu_dec_give_command(struct vpu_instance *inst, enum codec_command cmd, void *param)
 {
 	struct dec_info *p_dec_info = &inst->codec_info->dec_info;
-	struct queue_status_info *queue_info = param;
 
 	switch (cmd) {
-	case DEC_GET_QUEUE_STATUS:
+	case DEC_GET_QUEUE_STATUS: {
+		struct queue_status_info *queue_info = param;
+
 		queue_info->instance_queue_count = p_dec_info->instance_queue_count;
 		queue_info->report_queue_count = p_dec_info->report_queue_count;
 		break;
-
+	}
 	case ENABLE_DEC_THUMBNAIL_MODE:
 		p_dec_info->thumbnail_mode = 1;
 		break;
+	case DEC_RESET_FRAMEBUF_INFO: {
+		int i;
+
+		for (i = 0; i < inst->dst_buf_count; i++) {
+			wave5_vdi_free_dma_memory(inst->dev, &inst->frame_vbuf[i]);
+			wave5_vdi_free_dma_memory(inst->dev, &p_dec_info->vb_mv[i]);
+			wave5_vdi_free_dma_memory(inst->dev, &p_dec_info->vb_fbc_y_tbl[i]);
+			wave5_vdi_free_dma_memory(inst->dev, &p_dec_info->vb_fbc_c_tbl[i]);
+		}
+
+		wave5_vdi_free_dma_memory(inst->dev, &p_dec_info->vb_task);
+		break;
+	}
+	case DEC_GET_SEQ_INFO: {
+		struct dec_initial_info *seq_info = param;
+
+		*seq_info = p_dec_info->initial_info;
+		break;
+	}
+
 	default:
 		return -EINVAL;
 	}

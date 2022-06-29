@@ -53,9 +53,13 @@ int wave5_vpu_dec_fini_seq(struct vpu_instance *vpu_inst, u32 *fail_res);
 
 int wave5_dec_clr_disp_flag(struct vpu_instance *inst, uint32_t index);
 
+int wave5_dec_set_disp_flag(struct vpu_instance *inst, uint32_t index);
+
 int wave5_vpu_clear_interrupt(struct vpu_instance *inst, uint32_t flags);
 
 dma_addr_t wave5_vpu_dec_get_rd_ptr(struct vpu_instance *vpu_inst);
+
+int wave5_dec_set_rd_ptr(struct vpu_instance *vpu_inst, dma_addr_t addr);
 
 /***< WAVE5 encoder >******/
 

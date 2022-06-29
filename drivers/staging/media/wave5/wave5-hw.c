@@ -1731,6 +1731,26 @@ int wave5_dec_clr_disp_flag(struct vpu_instance *vpu_inst, unsigned int index)
 	return 0;
 }
 
+int wave5_dec_set_disp_flag(struct vpu_instance *vpu_inst, unsigned int index)
+{
+	int ret;
+
+	vpu_write_reg(vpu_inst->dev, W5_CMD_DEC_CLR_DISP_IDC, 0);
+	vpu_write_reg(vpu_inst->dev, W5_CMD_DEC_SET_DISP_IDC, BIT(index));
+	ret = wave5_send_query(vpu_inst, UPDATE_DISP_FLAG);
+
+	if (ret) {
+		if (ret == -EIO) {
+			u32 reg_val = vpu_read_reg(vpu_inst->dev, W5_RET_FAIL_REASON);
+
+			wave5_print_reg_err(vpu_inst->dev, reg_val);
+		}
+		return ret;
+	}
+
+	return 0;
+}
+
 int wave5_vpu_clear_interrupt(struct vpu_instance *vpu_inst, uint32_t flags)
 {
 	u32 interrupt_reason;
@@ -1752,6 +1772,17 @@ dma_addr_t wave5_vpu_dec_get_rd_ptr(struct vpu_instance *vpu_inst)
 		return vpu_inst->codec_info->dec_info.stream_rd_ptr;
 
 	return vpu_read_reg(vpu_inst->dev, W5_RET_QUERY_DEC_BS_RD_PTR);
+}
+
+int wave5_dec_set_rd_ptr(struct vpu_instance *vpu_inst, dma_addr_t addr)
+{
+	int ret;
+
+	vpu_write_reg(vpu_inst->dev, W5_RET_QUERY_DEC_SET_BS_RD_PTR, addr);
+
+	ret = wave5_send_query(vpu_inst, SET_BS_RD_PTR);
+
+	return ret;
 }
 
 /************************************************************************/

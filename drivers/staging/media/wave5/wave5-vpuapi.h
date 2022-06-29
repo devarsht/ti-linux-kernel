@@ -36,8 +36,7 @@ enum vpu_instance_state {
 	VPU_INST_STATE_OPEN = 1,
 	VPU_INST_STATE_INIT_SEQ = 2,
 	VPU_INST_STATE_PIC_RUN = 3,
-	VPU_INST_STATE_STOP = 4,
-	VPU_INST_STATE_WAIT_BUF = 5
+	VPU_INST_STATE_STOP = 4
 };
 
 #define WAVE5_MAX_FBS 32
@@ -195,6 +194,8 @@ enum codec_command {
 	ENABLE_DEC_THUMBNAIL_MODE,
 	DEC_GET_QUEUE_STATUS,
 	ENC_GET_QUEUE_STATUS,
+	DEC_RESET_FRAMEBUF_INFO,
+	DEC_GET_SEQ_INFO,
 };
 
 enum error_conceal_mode {
@@ -1082,6 +1083,7 @@ struct vpu_instance {
 	u64 timestamp;
 	bool cbcr_interleave;
 	bool nv21;
+	bool eos;
 
 	struct vpu_buf bitstream_vbuf;
 	bool thumbnail_mode;
@@ -1126,11 +1128,13 @@ int wave5_vpu_dec_register_frame_buffer_ex(struct vpu_instance *inst, int num_of
 int wave5_vpu_dec_start_one_frame(struct vpu_instance *inst, struct dec_param *param,
 				  u32 *res_fail);
 int wave5_vpu_dec_get_output_info(struct vpu_instance *inst, struct dec_output_info *info);
+int wave5_vpu_dec_set_rd_ptr(struct vpu_instance *inst, dma_addr_t addr, int update_wr_ptr);
 int wave5_vpu_dec_give_command(struct vpu_instance *inst, enum codec_command cmd, void *parameter);
 int wave5_vpu_dec_get_bitstream_buffer(struct vpu_instance *inst, dma_addr_t *prd_prt,
 				       dma_addr_t *pwr_ptr, uint32_t *size);
 int wave5_vpu_dec_update_bitstream_buffer(struct vpu_instance *inst, int size);
 int wave5_vpu_dec_clr_disp_flag(struct vpu_instance *inst, int index);
+int wave5_vpu_dec_set_disp_flag(struct vpu_instance *inst, int index);
 
 int wave5_vpu_enc_open(struct vpu_instance *vpu_inst, struct enc_open_param *enc_op_param);
 int wave5_vpu_enc_close(struct vpu_instance *inst, u32 *fail_res);

@@ -369,6 +369,8 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 
 		v4l2_m2m_dst_buf_remove_by_buf(inst->v4l2_fh.m2m_ctx, dst_buf);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+
+		dev_dbg(inst->dev->dev, "frame_cycle %8d\n", enc_output_info.frame_cycle);
 	}
 }
 

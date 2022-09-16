@@ -1096,12 +1096,10 @@ struct vpu_instance {
 	unsigned int bit_depth;
 	unsigned int frame_rate;
 	unsigned int vbv_buf_size;
-	unsigned int min_qp_i;
-	unsigned int max_qp_i;
-	unsigned int min_qp_p;
-	unsigned int max_qp_p;
-	unsigned int min_qp_b;
-	unsigned int max_qp_b;
+	unsigned int rc_mode;
+	unsigned int rc_enable;
+	unsigned int bit_rate;
+	struct enc_wave_param enc_param;
 };
 
 void wave5_vdi_write_register(struct vpu_device *vpu_device, unsigned int addr, unsigned int data);

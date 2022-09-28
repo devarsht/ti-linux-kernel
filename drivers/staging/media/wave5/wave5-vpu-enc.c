@@ -184,7 +184,7 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 		pix_mp->width = width;
 		pix_mp->height = height;
 		pix_mp->plane_fmt[0].bytesperline = 0;
-		pix_mp->plane_fmt[0].sizeimage = width * height;
+		pix_mp->plane_fmt[0].sizeimage = width * height / 8 * 3;
 		break;
 	}
 }
@@ -1083,6 +1083,9 @@ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buff
 	}
 
 	dev_dbg(inst->dev->dev, "size : %d\n", sizes[0]);
+
+	if (q->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
+		*num_buffers = COMMAND_QUEUE_DEPTH;
 
 	if (inst->state == VPU_INST_STATE_NONE && q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		u32 non_linear_num = 0;

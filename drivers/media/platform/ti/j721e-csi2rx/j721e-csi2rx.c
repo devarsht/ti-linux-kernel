@@ -38,7 +38,7 @@
 
 #define SHIM_PSI_CFG0(i)		(0x24 + ((i) * 0x20))
 #define SHIM_PSI_CFG0_SRC_TAG		GENMASK(15, 0)
-#define SHIM_PSI_CFG0_DST_TAG		GENMASK(31, 15)
+#define SHIM_PSI_CFG0_DST_TAG		GENMASK(31, 16)
 
 #define CSI_DF_YUV420			0x18
 #define CSI_DF_YUV422			0x1e
@@ -249,6 +249,62 @@ static const struct ti_csi2rx_fmt formats[] = {
 		.csi_df			= CSI_DF_RAW12,
 		.bpp			= 16,
 		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SRGGI10,
+		.code			= MEDIA_BUS_FMT_SRGGI10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SGRIG10,
+		.code			= MEDIA_BUS_FMT_SGRIG10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SBGGI10,
+		.code			= MEDIA_BUS_FMT_SBGGI10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SGBIG10,
+		.code			= MEDIA_BUS_FMT_SGBIG10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SGIRG10,
+		.code			= MEDIA_BUS_FMT_SGRIG10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SIGGR10,
+		.code			= MEDIA_BUS_FMT_SIGGR10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SGIBG10,
+		.code			= MEDIA_BUS_FMT_SGIBG10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
+	}, {
+		.fourcc			= V4L2_PIX_FMT_SIGGB10,
+		.code			= MEDIA_BUS_FMT_SIGGB10_1X10,
+		.colorspace		= V4L2_COLORSPACE_SRGB,
+		.csi_df			= CSI_DF_RAW10,
+		.bpp			= 16,
+		.size			= SHIM_DMACNTX_SIZE_16,
 	},
 
 	/* More formats can be supported but they are not listed for now. */
@@ -266,6 +322,18 @@ static const struct ti_csi2rx_fmt *find_format_by_pix(u32 pixelformat)
 
 	for (i = 0; i < num_formats; i++) {
 		if (formats[i].fourcc == pixelformat)
+			return &formats[i];
+	}
+
+	return NULL;
+}
+
+static const struct ti_csi2rx_fmt *find_format_by_code(u32 code)
+{
+	unsigned int i;
+
+	for (i = 0; i < num_formats; i++) {
+		if (formats[i].code == code)
 			return &formats[i];
 	}
 
@@ -375,7 +443,7 @@ static int ti_csi2rx_enum_framesizes(struct file *file, void *fh,
 	u8 bpp;
 
 	fmt = find_format_by_pix(fsize->pixel_format);
-	if (!fmt)
+	if (!fmt || fsize->index != 0)
 		return -EINVAL;
 
 	bpp = ALIGN(fmt->bpp, 8);
@@ -582,7 +650,7 @@ static void ti_csi2rx_setup_shim(struct ti_csi2rx_ctx *ctx)
 	writel(reg, csi->shim + SHIM_DMACNTX(ctx->idx));
 
 	reg = FIELD_PREP(SHIM_PSI_CFG0_SRC_TAG, 0) |
-	      FIELD_PREP(SHIM_PSI_CFG0_DST_TAG, 1);
+	      FIELD_PREP(SHIM_PSI_CFG0_DST_TAG, 0);
 	writel(reg, csi->shim + SHIM_PSI_CFG0(ctx->idx));
 }
 
@@ -972,11 +1040,11 @@ static void ti_csi2rx_stop_streaming(struct vb2_queue *vq)
 	 * the pixel reset. But at the same time, drain does not work either.
 	 * Figure this one out.
 	 */
-	if (state == TI_CSI2RX_DMA_IDLE) {
+	if (state != TI_CSI2RX_DMA_STOPPED) {
 		ret = ti_csi2rx_drain_dma(ctx);
 		if (ret)
-			dev_warn(csi->dev,
-				 "Failed to drain DMA. Next frame might be bogus\n");
+			dev_dbg(csi->dev,
+				"Failed to drain DMA. Next frame might be bogus\n");
 	}
 }
 
@@ -993,6 +1061,42 @@ static const struct vb2_ops csi_vb2_qops = {
 static inline struct ti_csi2rx_dev *to_csi2rx_dev(struct v4l2_subdev *sd)
 {
 	return container_of(sd, struct ti_csi2rx_dev, subdev);
+}
+
+static int ti_csi2rx_sd_set_fmt(struct v4l2_subdev *sd,
+				struct v4l2_subdev_state *state,
+				struct v4l2_subdev_format *format)
+{
+	struct v4l2_mbus_framefmt *fmt;
+	int ret = 0;
+
+	/* No transcoding, don't allow setting source fmt */
+	if (format->pad >= TI_CSI2RX_PAD_FIRST_SOURCE)
+		return v4l2_subdev_get_fmt(sd, state, format);
+
+	if (!find_format_by_code(format->format.code))
+		format->format.code = formats[0].code;
+
+	v4l2_subdev_lock_state(state);
+
+	fmt = v4l2_state_get_stream_format(state, format->pad, format->stream);
+	if (!fmt) {
+		ret = -EINVAL;
+		goto out;
+	}
+	*fmt = format->format;
+
+	fmt = v4l2_state_get_opposite_stream_format(state, format->pad,
+						    format->stream);
+	if (!fmt) {
+		ret = -EINVAL;
+		goto out;
+	}
+	*fmt = format->format;
+
+out:
+	v4l2_subdev_unlock_state(state);
+	return ret;
 }
 
 static int _ti_csi2rx_sd_set_routing(struct v4l2_subdev *sd,
@@ -1091,6 +1195,8 @@ static const struct v4l2_subdev_video_ops ti_csi2rx_subdev_video_ops = {
 static const struct v4l2_subdev_pad_ops ti_csi2rx_subdev_pad_ops = {
 	.init_cfg = ti_csi2rx_sd_init_cfg,
 	.set_routing = ti_csi2rx_sd_set_routing,
+	.get_fmt = v4l2_subdev_get_fmt,
+	.set_fmt = ti_csi2rx_sd_set_fmt,
 };
 
 static const struct v4l2_subdev_ops ti_csi2rx_subdev_ops = {

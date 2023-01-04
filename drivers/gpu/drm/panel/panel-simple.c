@@ -676,7 +676,7 @@ static const struct drm_display_mode ampire_am_1280800n3tzqw_t00h_mode = {
 static const struct panel_desc ampire_am_1280800n3tzqw_t00h = {
 	.modes = &ampire_am_1280800n3tzqw_t00h_mode,
 	.num_modes = 1,
-	.bpc = 6,
+	.bpc = 8,
 	.size = {
 		.width = 217,
 		.height = 136,
@@ -855,6 +855,63 @@ static const struct panel_desc auo_b116xak01 = {
 		.hpd_absent_delay = 200,
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB666_1X18,
+	.connector_type = DRM_MODE_CONNECTOR_eDP,
+};
+
+static const struct drm_display_mode ti_panel_edp_mode[] = {
+	{
+		.clock = 36000,
+		.hdisplay = 800,
+		.hsync_start = 800 + 48,
+		.hsync_end = 800 + 48 + 32,
+		.htotal = 800 + 48 + 32 + 80,
+		.vdisplay = 600,
+		.vsync_start = 600 + 3,
+		.vsync_end = 600 + 3 + 4,
+		.vtotal = 600 + 3 + 4 + 9,
+
+		.crtc_clock = 36000,
+		.crtc_hdisplay = 800,
+		.crtc_hsync_start = 800 + 48,
+		.crtc_hsync_end = 800 + 48 + 32,
+		.crtc_htotal = 800 + 48 + 32 + 80,
+		.crtc_vdisplay = 600,
+		.crtc_vsync_start = 600 + 3,
+		.crtc_vsync_end = 600 + 3 + 4,
+		.crtc_vtotal = 600 + 3 + 4 + 9,
+
+		.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
+	},
+	{
+		.clock = 108000,
+		.hdisplay = 1280,
+		.hsync_start = 1280 + 48,
+		.hsync_end = 1280 + 48 + 112,
+		.htotal = 1280 + 48 + 112 + 248,
+		.vdisplay = 1024,
+		.vsync_start = 1024 + 1,
+		.vsync_end = 1024 + 1 + 3,
+		.vtotal = 1024 + 1 + 3 + 38,
+
+		.crtc_clock = 108000,
+		.crtc_hdisplay = 1280,
+		.crtc_hsync_start = 1280 + 48,
+		.crtc_hsync_end = 1280 + 48 + 112,
+		.crtc_htotal = 1280 + 48 + 112 + 248,
+		.crtc_vdisplay = 1024,
+		.crtc_vsync_start = 1024 + 1,
+		.crtc_vsync_end = 1024 + 1 + 3,
+		.crtc_vtotal = 1024 + 1 + 3 + 38,
+
+		.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
+	},
+};
+
+static const struct panel_desc ti_panel_edp = {
+	.modes = ti_panel_edp_mode,
+	.num_modes = ARRAY_SIZE(ti_panel_edp_mode),
+	.bpc = 8,
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
 	.connector_type = DRM_MODE_CONNECTOR_eDP,
 };
 
@@ -2144,6 +2201,7 @@ static const struct panel_desc innolux_g070y2_l01 = {
 		.unprepare = 800,
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
@@ -2200,7 +2258,7 @@ static const struct panel_desc innolux_g121i1_l01 = {
 		.enable = 200,
 		.disable = 20,
 	},
-	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.bus_format = MEDIA_BUS_FMT_RGB666_1X7X3_SPWG,
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
@@ -2654,6 +2712,7 @@ static const struct display_timing logictechno_lt161010_2nh_timing = {
 static const struct panel_desc logictechno_lt161010_2nh = {
 	.timings = &logictechno_lt161010_2nh_timing,
 	.num_timings = 1,
+	.bpc = 6,
 	.size = {
 		.width = 154,
 		.height = 86,
@@ -2683,6 +2742,7 @@ static const struct display_timing logictechno_lt170410_2whc_timing = {
 static const struct panel_desc logictechno_lt170410_2whc = {
 	.timings = &logictechno_lt170410_2whc_timing,
 	.num_timings = 1,
+	.bpc = 8,
 	.size = {
 		.width = 217,
 		.height = 136,
@@ -2756,6 +2816,35 @@ static const struct panel_desc mitsubishi_aa070mc01 = {
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
+};
+
+static const struct drm_display_mode microtips_13_101hieb0hf0_s_mode = {
+	.clock = 150275,
+	.hdisplay = 1920,
+	.hsync_start = 1920 + 32,
+	.hsync_end = 1920 + 32 + 52,
+	.htotal = 1920 + 32 + 52 + 24,
+	.vdisplay = 1200,
+	.vsync_start = 1200 + 24,
+	.vsync_end = 1200 + 24 + 8,
+	.vtotal = 1200 + 24 + 8 + 3,
+};
+
+static const struct panel_desc microtips_13_101hieb0hf0_s = {
+	.modes = &microtips_13_101hieb0hf0_s_mode,
+	.bpc = 8,
+	.num_modes = 1,
+	.size = {
+		.width = 217,
+		.height = 136,
+	},
+	.delay = {
+		.prepare = 50,
+		.disable = 50,
+	},
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH,
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
 static const struct display_timing nec_nl12880bc20_05_timing = {
@@ -4153,6 +4242,9 @@ static const struct of_device_id platform_of_match[] = {
 		.compatible = "logictechno,lt170410-2whc",
 		.data = &logictechno_lt170410_2whc,
 	}, {
+		.compatible = "microtips,13-101hieb0hf0-s",
+		.data = &microtips_13_101hieb0hf0_s,
+	}, {
 		.compatible = "mitsubishi,aa070mc01-ca1",
 		.data = &mitsubishi_aa070mc01,
 	}, {
@@ -4299,6 +4391,9 @@ static const struct of_device_id platform_of_match[] = {
 	}, {
 		.compatible = "vxt,vl050-8048nt-c01",
 		.data = &vl050_8048nt_c01,
+	}, {
+		.compatible = "ti,panel-edp",
+		.data = &ti_panel_edp,
 	}, {
 		.compatible = "winstar,wf35ltiacd",
 		.data = &winstar_wf35ltiacd,

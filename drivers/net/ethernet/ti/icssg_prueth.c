@@ -9,6 +9,7 @@
 #include <linux/bitops.h>
 #include <linux/clk.h>
 #include <linux/etherdevice.h>
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/genalloc.h>
 #include <linux/if_vlan.h>
@@ -35,8 +36,12 @@
 #define PRUETH_MODULE_VERSION "0.1"
 #define PRUETH_MODULE_DESCRIPTION "PRUSS ICSSG Ethernet driver"
 
+/* MAX MTU set to match MII_G_RT_RX_STAT_MAX_SIZE_PRU0/1,
+ * MII_G_RT_TX_STAT_MAX_SIZE_PORT0/1 defaults
+ */
+#define PRUETH_MAX_MTU		(2000 - ETH_HLEN - ETH_FCS_LEN)
 #define PRUETH_MIN_PKT_SIZE	(VLAN_ETH_ZLEN)
-#define PRUETH_MAX_PKT_SIZE	(VLAN_ETH_FRAME_LEN + ETH_FCS_LEN)
+#define PRUETH_MAX_PKT_SIZE	(PRUETH_MAX_MTU + ETH_HLEN + ETH_FCS_LEN)
 
 /* Netif debug messages possible */
 #define PRUETH_EMAC_DEBUG	(NETIF_MSG_DRV | \
@@ -1755,6 +1760,8 @@ skip_mgm_irq:
 	if (ret)
 		goto free_rx_mgmt_ts_irq;
 
+	icssg_mii_update_mtu(prueth->mii_rt, slice, ndev->max_mtu);
+
 	if (!emac->is_sr1 && !prueth->emacs_initialized) {
 		ret = icss_iep_init(emac->iep, &prueth_iep_clockops,
 				    emac, IEP_DEFAULT_CYCLE_TIME_NS);
@@ -1819,6 +1826,9 @@ skip_mgm_irq:
 		icssg_set_pvid(emac->prueth, emac->port_vlan, emac->port_id);
 		emac_set_port_state(emac, ICSSG_EMAC_PORT_VLAN_AWARE_ENABLE);
 	}
+
+	queue_work(system_long_wq, &emac->stats_work.work);
+
 	return 0;
 
 reset_tx_chan:
@@ -1922,6 +1932,11 @@ static int emac_ndo_stop(struct net_device *ndev)
 		icss_iep_exit(emac->iep);
 
 	cancel_work_sync(&emac->rx_mode_work);
+
+	/* Destroying the queued work in ndo_stop() */
+
+	cancel_delayed_work_sync(&emac->stats_work);
+
 	/* stop PRUs */
 	prueth_emac_stop(emac);
 
@@ -2239,6 +2254,9 @@ static int prueth_netdev_init(struct prueth *prueth,
 	}
 	INIT_WORK(&emac->rx_mode_work, emac_ndo_set_rx_mode_work);
 
+	emac_ethtool_stats_init(emac);
+	INIT_DELAYED_WORK(&emac->stats_work, emac_stats_work_handler);
+
 	ret = pruss_request_mem_region(prueth->pruss,
 				       port == PRUETH_PORT_MII0 ?
 				       PRUSS_MEM_DRAM0 : PRUSS_MEM_DRAM1,
@@ -2316,6 +2334,8 @@ skip_irq:
 	}
 	ether_addr_copy(emac->mac_addr, ndev->dev_addr);
 
+	ndev->min_mtu = PRUETH_MIN_PKT_SIZE;
+	ndev->max_mtu = PRUETH_MAX_MTU;
 	ndev->netdev_ops = &emac_netdev_ops;
 	ndev->ethtool_ops = &icssg_ethtool_ops;
 	ndev->hw_features = NETIF_F_SG;

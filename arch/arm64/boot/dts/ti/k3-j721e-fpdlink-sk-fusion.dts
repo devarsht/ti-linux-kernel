@@ -35,17 +35,19 @@
 			#size-cells = <0>;
 			reg = <0>;
 
-			deser@38 {
+			ds90ub960_0: deser@3d {
 				compatible = "ti,ds90ub960-q1";
 
 				reg-names = "main", "ser0", "ser1", "ser2", "ser3";
-				reg       = <0x38>, <0x44>, <0x45>, <0x46>, <0x47>;
+				reg       = <0x3d>, <0x44>, <0x45>, <0x46>, <0x47>;
 
 				clocks = <&clk_fusion_25M_fixed>;
 
 				i2c-alias-pool = /bits/ 16 <0x4a 0x4b 0x4c 0x4d 0x4e 0x4f>;
 
 				data-rate = <1600000000>;
+
+				#clock-cells = <0>;
 
 				ds90ub960_0_ports: ports {
 					#address-cells = <1>;
@@ -68,17 +70,19 @@
 				};
 			};
 
-			deser@30 {
+			ds90ub960_1: deser@36 {
 				compatible = "ti,ds90ub960-q1";
 
 				reg-names = "main", "ser0", "ser1", "ser2", "ser3";
-				reg       = <0x30>, <0x54>, <0x55>, <0x56>, <0x57>;
+				reg       = <0x36>, <0x54>, <0x55>, <0x56>, <0x57>;
 
 				clocks = <&clk_fusion_25M_fixed>;
 
 				i2c-alias-pool = /bits/ 16 <0x5a 0x5b 0x5c 0x5d 0x5e 0x5f>;
 
 				data-rate = <1600000000>;
+
+				#clock-cells = <0>;
 
 				ds90ub960_1_ports: ports {
 					#address-cells = <1>;

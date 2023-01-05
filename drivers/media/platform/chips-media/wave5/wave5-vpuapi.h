@@ -850,7 +850,7 @@ struct enc_code_opt {
 
 struct enc_param {
 	struct frame_buffer *source_frame;
-	u32 pic_stream_buffer_addr;
+	dma_addr_t pic_stream_buffer_addr;
 	u64 pic_stream_buffer_size;
 	u32 force_pic_qp_i;
 	u32 force_pic_qp_p;
@@ -876,7 +876,7 @@ struct enc_param {
 };
 
 struct enc_output_info {
-	u32 bitstream_buffer;
+	dma_addr_t bitstream_buffer;
 	u32 bitstream_size; /* the byte size of encoded bitstream */
 	u32 pic_type: 2; /* <<vpuapi_h_pic_type>> */
 	s32 recon_frame_index;
@@ -927,8 +927,8 @@ struct dec_info {
 	struct dec_open_param open_param;
 	struct dec_initial_info initial_info;
 	struct dec_initial_info new_seq_info; /* temporal new sequence information */
-	u32 stream_wr_ptr;
-	u32 stream_rd_ptr;
+	dma_addr_t stream_wr_ptr;
+	dma_addr_t stream_rd_ptr;
 	u32 frame_display_flag;
 	dma_addr_t stream_buf_start_addr;
 	dma_addr_t stream_buf_end_addr;
@@ -973,8 +973,8 @@ struct dec_info {
 struct enc_info {
 	struct enc_open_param open_param;
 	struct enc_initial_info initial_info;
-	u32 stream_rd_ptr;
-	u32 stream_wr_ptr;
+	dma_addr_t stream_rd_ptr;
+	dma_addr_t stream_wr_ptr;
 	dma_addr_t stream_buf_start_addr;
 	dma_addr_t stream_buf_end_addr;
 	u32 stream_buf_size;

@@ -182,8 +182,8 @@ static int wave5_vpu_probe(struct platform_device *pdev)
 	}
 
 	/* physical addresses limited to 32 bits */
-	dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
-	dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
+	dma_set_mask(&pdev->dev, DMA_BIT_MASK(48));
+	dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(48));
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)

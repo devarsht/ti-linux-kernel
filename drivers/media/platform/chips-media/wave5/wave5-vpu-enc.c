@@ -209,10 +209,12 @@ static void wave5_vpu_enc_start_encode(struct vpu_instance *inst)
 
 		if (!src_buf) {
 			dev_dbg(inst->dev->dev, "%s: No valid src buf\n", __func__);
-			if (inst->state == VPU_INST_STATE_STOP)
+			if (inst->state == VPU_INST_STATE_STOP) {
 				pic_param.src_end_flag = true;
-			else
+				inst->eos = true;
+			} else {
 				break;
+			}
 		} else {
 			src_vbuf = wave5_to_vpu_buf(src_buf);
 			if (inst->src_fmt.num_planes == 1) {
@@ -669,7 +671,8 @@ static int wave5_vpu_enc_encoder_cmd(struct file *file, void *fh, struct v4l2_en
 	switch (ec->cmd) {
 	case V4L2_ENC_CMD_STOP:
 		inst->state = VPU_INST_STATE_STOP;
-		inst->ops->start_process(inst);
+		if (inst->eos != true)
+			inst->ops->start_process(inst);
 		break;
 	case V4L2_ENC_CMD_START:
 		break;
@@ -1415,6 +1418,8 @@ static void wave5_vpu_enc_stop_streaming(struct vb2_queue *q)
 			vb2_set_plane_payload(&buf->vb2_buf, 0, 0);
 			v4l2_m2m_buf_done(buf, VB2_BUF_STATE_ERROR);
 		}
+
+		inst->eos = false;
 	}
 }
 

@@ -235,6 +235,7 @@ static int wave5_vpu_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "wave5_vdi_init, fail: %d\n", ret);
 		goto err_clk_dis;
 	}
+	dev->ext_addr = ((dev->common_mem.daddr >> 32) & 0xFFFF);
 	dev->product = wave5_vpu_get_product_id(dev);
 
 	INIT_LIST_HEAD(&dev->instances);

@@ -462,7 +462,6 @@ struct dec_open_param {
 	u32 av1_format;
 	enum error_conceal_unit error_conceal_unit;
 	enum error_conceal_mode error_conceal_mode;
-	u32 pri_ext_addr;
 	u32 pri_axprot;
 	u32 pri_axcache;
 	u32 enable_non_ref_fbc_write: 1;
@@ -814,7 +813,6 @@ struct enc_open_param {
 	u32 encode_vui_rbsp;
 	u32 vui_rbsp_data_size; /* the bit size of the VUI rbsp data */
 	u32 vui_rbsp_data_addr; /* the address of the VUI rbsp data */
-	u32 pri_ext_addr;
 	u32 pri_axprot;
 	u32 pri_axcache;
 	bool ring_buffer_enable;
@@ -1022,6 +1020,7 @@ struct vpu_device {
 	struct dma_vpu_buf sram_buf;
 	void __iomem *vdb_register;
 	u32 product_code;
+	u32 ext_addr;
 	struct ida inst_ida;
 	struct clk_bulk_data *clks;
 	int num_clks;

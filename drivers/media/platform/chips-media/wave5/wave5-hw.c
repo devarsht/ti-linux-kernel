@@ -115,7 +115,7 @@ static dma_addr_t wave5_read_reg_for_mem_addr(struct vpu_instance *inst,
 					      unsigned int reg_addr)
 {
 	dma_addr_t addr;
-	dma_addr_t high_addr = WAVE5_PROC_AXI_EXT_ADDR;
+	dma_addr_t high_addr = inst->dev->ext_addr;
 	u32 val;
 
 	val = vpu_read_reg(inst->dev, reg_addr);
@@ -360,7 +360,7 @@ int wave5_vpu_init(struct device *dev, u8 *fw, size_t size)
 
 	vpu_write_reg(vpu_dev, W5_HW_OPTION, 0);
 
-	reg_val = (WAVE5_PROC_AXI_EXT_ADDR & 0xFFFF);
+	reg_val = (vpu_dev->ext_addr & 0xFFFF);
 	wave5_fio_writel(vpu_dev, W5_BACKBONE_PROC_EXT_ADDR, reg_val);
 	reg_val = ((WAVE5_PROC_AXI_AXPROT & 0x7) << 4) |
 		(WAVE5_PROC_AXI_AXCACHE & 0xF);
@@ -478,7 +478,7 @@ int wave5_vpu_build_up_dec_param(struct vpu_instance *inst,
 	bs_endian = (~bs_endian & VDI_128BIT_ENDIAN_MASK);
 	vpu_write_reg(inst->dev, W5_CMD_BS_PARAM, bs_endian);
 	vpu_write_reg(inst->dev, W5_CMD_EXT_ADDR, (param->pri_axprot << 20) |
-			(param->pri_axcache << 16) | WAVE5_PROC_AXI_EXT_ADDR);
+			(param->pri_axcache << 16) | inst->dev->ext_addr);
 	vpu_write_reg(inst->dev, W5_CMD_NUM_CQ_DEPTH_M1, (COMMAND_QUEUE_DEPTH - 1));
 	vpu_write_reg(inst->dev, W5_CMD_ERR_CONCEAL, (param->error_conceal_unit << 2) |
 			(param->error_conceal_mode));
@@ -1259,7 +1259,7 @@ int wave5_vpu_re_init(struct device *dev, u8 *fw, size_t size)
 
 		vpu_write_reg(vpu_dev, W5_HW_OPTION, 0);
 
-		reg_val = (WAVE5_PROC_AXI_EXT_ADDR & 0xFFFF);
+		reg_val = (vpu_dev->ext_addr & 0xFFFF);
 		wave5_fio_writel(vpu_dev, W5_BACKBONE_PROC_EXT_ADDR, reg_val);
 		reg_val = ((WAVE5_PROC_AXI_AXPROT & 0x7) << 4) |
 			(WAVE5_PROC_AXI_AXCACHE & 0xF);
@@ -1377,7 +1377,7 @@ static int wave5_vpu_sleep_wake(struct device *dev, bool i_sleep_wake, const uin
 
 		vpu_write_reg(vpu_dev, W5_HW_OPTION, 0);
 
-		reg_val = (WAVE5_PROC_AXI_EXT_ADDR & 0xFFFF);
+		reg_val = (vpu_dev->ext_addr & 0xFFFF);
 		wave5_fio_writel(vpu_dev, W5_BACKBONE_PROC_EXT_ADDR, reg_val);
 		reg_val = ((WAVE5_PROC_AXI_AXPROT & 0x7) << 4) |
 			(WAVE5_PROC_AXI_AXCACHE & 0xF);
@@ -1732,7 +1732,7 @@ int wave5_vpu_build_up_enc_param(struct device *dev, struct vpu_instance *inst,
 	reg_val = (open_param->line_buf_int_en << 6) | bs_endian;
 	vpu_write_reg(inst->dev, W5_CMD_BS_PARAM, reg_val);
 	vpu_write_reg(inst->dev, W5_CMD_EXT_ADDR, (open_param->pri_axprot << 20) |
-			(open_param->pri_axcache << 16) | WAVE5_PROC_AXI_EXT_ADDR);
+			(open_param->pri_axcache << 16) | inst->dev->ext_addr);
 	vpu_write_reg(inst->dev, W5_CMD_NUM_CQ_DEPTH_M1, (COMMAND_QUEUE_DEPTH - 1));
 
 	reg_val = 0;

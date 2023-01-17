@@ -725,7 +725,7 @@ struct enc_wave_param {
 	u32 num_ticks_poc_diff_one;
 	s32 chroma_cb_qp_offset; /* the value of chroma(cb) QP offset */
 	s32 chroma_cr_qp_offset; /* the value of chroma(cr) QP offset */
-	u32 initial_rc_qp;
+	s32 initial_rc_qp;
 	u32 nr_intra_weight_y;
 	u32 nr_intra_weight_cb; /* A weight to cb noise level for intra picture (0 ~ 31) */
 	u32 nr_intra_weight_cr; /* A weight to cr noise level for intra picture (0 ~ 31) */
@@ -1142,17 +1142,13 @@ struct vpu_instance {
 	unsigned int src_buf_count;
 	unsigned int rot_angle;
 	unsigned int mirror_direction;
-	unsigned int profile;
-	unsigned int level;
 	unsigned int bit_depth;
 	unsigned int frame_rate;
 	unsigned int vbv_buf_size;
-	unsigned int min_qp_i;
-	unsigned int max_qp_i;
-	unsigned int min_qp_p;
-	unsigned int max_qp_p;
-	unsigned int min_qp_b;
-	unsigned int max_qp_b;
+	unsigned int rc_mode;
+	unsigned int rc_enable;
+	unsigned int bit_rate;
+	struct enc_wave_param enc_param;
 };
 
 void wave5_vdi_write_register(struct vpu_device *vpu_dev, u32 addr, u32 data);

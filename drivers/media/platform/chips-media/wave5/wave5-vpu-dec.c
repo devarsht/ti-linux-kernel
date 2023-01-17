@@ -699,6 +699,10 @@ static int wave5_vpu_dec_decoder_cmd(struct file *file, void *fh, struct v4l2_de
 				"Setting EOS for the bitstream, fail: %d\n", ret);
 			return ret;
 		}
+		if (inst->eos != TRUE) {
+			inst->ops->start_process(inst);
+			return -EBUSY;
+		}
 		break;
 	case V4L2_DEC_CMD_START:
 		break;
@@ -1052,12 +1056,22 @@ static void wave5_vpu_dec_buf_queue_src(struct vb2_buffer *vb)
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vpu_instance *inst = vb2_get_drv_priv(vb->vb2_queue);
 	struct vpu_buffer *vpu_buf = wave5_to_vpu_buf(vbuf);
+	int ret;
 
 	vpu_buf->consumed = false;
 	vbuf->sequence = inst->queued_src_buf_num++;
 
 	if (inst->state == VPU_INST_STATE_PIC_RUN) {
 		wave5_handle_bitstream_buffer(inst);
+		inst->ops->start_process(inst);
+	}
+
+	if (inst->state == VPU_INST_STATE_STOP) {
+		ret = wave5_vpu_dec_update_bitstream_buffer(inst, 0);
+		if (ret)
+			dev_err(inst->dev->dev,
+				"Setting EOS for the bitstream, fail: %d\n", ret);
+
 		inst->ops->start_process(inst);
 	}
 }

@@ -614,7 +614,7 @@ struct dec_output_info {
 
 	u32 ctu_size;
 	s32 output_flag;
-	u32 sequence_changed: 1;
+	u32 sequence_changed;
 	u32 decoding_success: 1;
 };
 

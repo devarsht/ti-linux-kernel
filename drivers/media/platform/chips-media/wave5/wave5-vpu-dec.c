@@ -199,13 +199,13 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 	case V4L2_PIX_FMT_NV12:
 	case V4L2_PIX_FMT_NV21:
 		pix_mp->width = round_up(width, 32);
-		pix_mp->height = height;
+		pix_mp->height = round_up(height, 16);
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = width * height * 3 / 2;
 		break;
 	case V4L2_PIX_FMT_YUV420M:
 		pix_mp->width = round_up(width, 32);
-		pix_mp->height = height;
+		pix_mp->height = round_up(height, 16);
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = width * height;
 		pix_mp->plane_fmt[1].bytesperline = round_up(width, 32) / 2;
@@ -216,7 +216,7 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 	case V4L2_PIX_FMT_NV12M:
 	case V4L2_PIX_FMT_NV21M:
 		pix_mp->width = round_up(width, 32);
-		pix_mp->height = height;
+		pix_mp->height = round_up(height, 16);
 		pix_mp->plane_fmt[0].bytesperline = round_up(width, 32);
 		pix_mp->plane_fmt[0].sizeimage = width * height;
 		pix_mp->plane_fmt[1].bytesperline = round_up(width, 32);
@@ -312,7 +312,7 @@ static void wave5_vpu_dec_finish_decode(struct vpu_instance *inst)
 				v4l2_m2m_dst_buf_remove_by_idx(inst->v4l2_fh.m2m_ctx,
 							       dec_output_info.index_frame_display);
 			int stride = dec_output_info.disp_frame.stride;
-			int height = dec_output_info.disp_pic_height;
+			int height = dec_output_info.rc_display.bottom;
 
 			if (inst->dst_fmt.num_planes == 1) {
 				vb2_set_plane_payload(&dst_buf->vb2_buf, 0,
@@ -639,8 +639,13 @@ static int wave5_vpu_dec_g_selection(struct file *file, void *fh, struct v4l2_se
 	case V4L2_SEL_TGT_COMPOSE_DEFAULT:
 		s->r.left = 0;
 		s->r.top = 0;
-		s->r.width = inst->src_fmt.width;
-		s->r.height = inst->src_fmt.height;
+		if (inst->state > VPU_INST_STATE_OPEN) {
+			s->r.width = inst->conf_win_width;
+			s->r.height = inst->conf_win_height;
+		} else {
+			s->r.width = inst->src_fmt.width;
+			s->r.height = inst->src_fmt.height;
+		}
 		break;
 	default:
 		return -EINVAL;
@@ -946,6 +951,9 @@ static void wave5_vpu_dec_start_streaming_open(struct vpu_instance *inst)
 		inst->min_dst_buf_count = initial_info.min_frame_buffer_count + 1;
 		inst->dst_buf_count = inst->min_dst_buf_count;
 
+		inst->conf_win_width = initial_info.pic_crop_rect.right;
+		inst->conf_win_height = initial_info.pic_crop_rect.bottom;
+
 		ctrl = v4l2_ctrl_find(&inst->v4l2_ctrl_hdl,
 				      V4L2_CID_MIN_BUFFERS_FOR_CAPTURE);
 		if (ctrl)
@@ -1011,6 +1019,9 @@ static void wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
 
 		inst->min_dst_buf_count = initial_info.min_frame_buffer_count + 1;
 		inst->dst_buf_count = inst->min_dst_buf_count;
+
+		inst->conf_win_width = initial_info.pic_crop_rect.right;
+		inst->conf_win_height = initial_info.pic_crop_rect.bottom;
 
 		ctrl = v4l2_ctrl_find(&inst->v4l2_ctrl_hdl,
 				      V4L2_CID_MIN_BUFFERS_FOR_CAPTURE);

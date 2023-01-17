@@ -917,17 +917,19 @@ free_bitstream_vbuf:
 	return ret;
 }
 
-static void wave5_vpu_dec_start_streaming_open(struct vpu_instance *inst)
+static int wave5_vpu_dec_start_streaming_open(struct vpu_instance *inst)
 {
 	struct dec_initial_info initial_info;
-	int ret;
+	int ret = 0;
 
 	memset(&initial_info, 0, sizeof(struct dec_initial_info));
 
 	ret = wave5_vpu_dec_issue_seq_init(inst);
-	if (ret)
+	if (ret) {
 		dev_dbg(inst->dev->dev, "%s: wave5_vpu_dec_issue_seq_init, fail: %d\n",
 			__func__, ret);
+		return ret;
+	}
 
 	if (wave5_vpu_wait_interrupt(inst, VPU_DEC_TIMEOUT) < 0)
 		dev_dbg(inst->dev->dev, "%s: failed to call vpu_wait_interrupt()\n", __func__);
@@ -970,14 +972,16 @@ static void wave5_vpu_dec_start_streaming_open(struct vpu_instance *inst)
 
 		wave5_handle_src_buffer(inst);
 	}
+
+	return ret;
 }
 
-static void wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
+static int wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
 {
 	struct dec_initial_info initial_info;
 	struct dec_param pic_param;
 	struct dec_output_info dec_output_info;
-	int ret;
+	int ret = 0;
 	u32 fail_res = 0;
 
 	memset(&pic_param, 0, sizeof(struct dec_param));
@@ -990,7 +994,7 @@ static void wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
 		inst->state = VPU_INST_STATE_STOP;
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
 		dev_dbg(inst->dev->dev, "%s: wave5_vpu_dec_start_one_frame\n", __func__);
-		return;
+		return ret;
 	}
 
 	if (wave5_vpu_wait_interrupt(inst, VPU_DEC_TIMEOUT) < 0)
@@ -1000,7 +1004,7 @@ static void wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
 	if (ret) {
 		dev_dbg(inst->dev->dev, "%s: wave5_vpu_dec_get_output_info, fail: %d\n",
 			__func__, ret);
-		return;
+		return ret;
 	}
 
 	if (dec_output_info.sequence_changed) {
@@ -1039,6 +1043,8 @@ static void wave5_vpu_dec_start_streaming_seek(struct vpu_instance *inst)
 
 		wave5_handle_src_buffer(inst);
 	}
+
+	return ret;
 }
 
 static void wave5_vpu_dec_buf_queue_src(struct vb2_buffer *vb)
@@ -1134,18 +1140,29 @@ static void wave5_vpu_dec_buf_queue(struct vb2_buffer *vb)
 static int wave5_vpu_dec_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct vpu_instance *inst = vb2_get_drv_priv(q);
+	int ret = 0;
 
 	dev_dbg(inst->dev->dev, "%s: type: %d\n", __func__, q->type);
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
 		wave5_handle_bitstream_buffer(inst);
 		if (inst->state == VPU_INST_STATE_OPEN)
-			wave5_vpu_dec_start_streaming_open(inst);
+			ret = wave5_vpu_dec_start_streaming_open(inst);
 		else if (inst->state == VPU_INST_STATE_INIT_SEQ)
-			wave5_vpu_dec_start_streaming_seek(inst);
+			ret = wave5_vpu_dec_start_streaming_seek(inst);
+
+		if (ret) {
+			struct vb2_v4l2_buffer *buf;
+
+			while ((buf = v4l2_m2m_src_buf_remove(inst->v4l2_fh.m2m_ctx))) {
+				dev_dbg(inst->dev->dev, "%s: (Multiplanar) buf type %4d | index %4d\n",
+					__func__, buf->vb2_buf.type, buf->vb2_buf.index);
+				v4l2_m2m_buf_done(buf, VB2_BUF_STATE_QUEUED);
+			}
+		}
 	}
 
-	return 0;
+	return ret;
 }
 
 static void wave5_vpu_dec_stop_streaming(struct vb2_queue *q)

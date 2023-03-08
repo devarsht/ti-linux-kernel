@@ -225,7 +225,7 @@ static int wave5_vpu_probe(struct platform_device *pdev)
 		}
 		dev->sram_buf.daddr = sram.start;
 		dev->sram_buf.size = resource_size(&sram);
-		dev_dbg(&pdev->dev, "%s: sram daddr: %pad, size: 0x%lx\n",
+		dev_dbg(&pdev->dev, "%s: sram daddr: %pad, size: 0x%zu\n",
 			__func__, &dev->sram_buf.daddr, dev->sram_buf.size);
 	}
 

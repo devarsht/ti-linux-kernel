@@ -2,7 +2,7 @@
 /*
  * Device Tree Source for K2G SOC
  *
- * Copyright (C) 2016-2021 Texas Instruments Incorporated - https://www.ti.com/
+ * Copyright (C) 2016-2017 Texas Instruments Incorporated - http://www.ti.com/
  */
 
 #include <dt-bindings/interrupt-controller/arm-gic.h>
@@ -101,11 +101,6 @@
 			ranges = <0x0 0x0c000000 0x100000>;
 			#address-cells = <1>;
 			#size-cells = <1>;
-
-			mpm-sram@0 {
-				compatible = "ti,keystone-dsp-msm-ram";
-				reg = <0x0 0x80000>;
-			};
 
 			bm-sram@f7000 {
 				reg = <0x000f7000 0x8000>;
@@ -247,7 +242,7 @@
 			status = "disabled";
 		};
 
-		msgmgr: msgmgr@2a00000 {
+		msgmgr: mailbox@2a00000 {
 			compatible = "ti,k2g-message-manager";
 			#mbox-cells = <2>;
 			reg-names = "queue_proxy_region",
@@ -259,7 +254,7 @@
 				     <GIC_SPI 327 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
-		pmmc: pmmc@2921c00 {
+		pmmc: system-controller@2921c00 {
 			compatible = "ti,k2g-sci";
 			/*
 			 * In case of rare platforms that does not use k2g as
@@ -267,7 +262,7 @@
 			 */
 			ti,system-reboot-controller;
 			mbox-names = "rx", "tx";
-			mboxes= <&msgmgr 5 2>,
+			mboxes = <&msgmgr 5 2>,
 				<&msgmgr 0 0>;
 			reg-names = "debug_messages";
 			reg = <0x02921c00 0x400>;
@@ -277,7 +272,7 @@
 				#power-domain-cells = <1>;
 			};
 
-			k2g_clks: clocks {
+			k2g_clks: clock-controller {
 				compatible = "ti,k2g-sci-clk";
 				#clock-cells = <2>;
 			};
@@ -286,14 +281,6 @@
 				compatible = "ti,sci-reset";
 				#reset-cells = <2>;
 			};
-		};
-
-		clock_event: timer@2210000 {
-			compatible = "ti,k2g-timer";
-			reg = <0x02210000 0x50>;
-			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL_HIGH>,
-					<GIC_SPI 18 IRQ_TYPE_LEVEL_LOW>;
-			clocks = <&k2g_clks 0x1e 0>;
 		};
 
 		gpio0: gpio@2603000 {
@@ -339,13 +326,13 @@
 
 		dss: dss@02540000 {
 			compatible = "ti,k2g-dss";
-			reg =	<0x02540000 0x400>,
+			reg = <0x02540000 0x400>,
 				<0x02550000 0x1000>,
 				<0x02557000 0x1000>,
 				<0x0255a800 0x100>,
 				<0x0255ac00 0x100>;
 			reg-names = "cfg", "common", "vid1", "ovr1", "vp1";
-			clocks =	<&k2g_clks 0x2 0>,
+			clocks = <&k2g_clks 0x2 0>,
 					<&k2g_clks 0x2 1>;
 			clock-names = "fck", "vp1";
 			interrupts = <GIC_SPI 247 IRQ_TYPE_EDGE_RISING>;
@@ -361,7 +348,7 @@
 
 		edma0: edma@2700000 {
 			compatible = "ti,k2g-edma3-tpcc", "ti,edma3-tpcc";
-			reg =	<0x02700000 0x8000>;
+			reg = <0x02700000 0x8000>;
 			reg-names = "edma3_cc";
 			interrupts = <GIC_SPI 200 IRQ_TYPE_EDGE_RISING>,
 					<GIC_SPI 216 IRQ_TYPE_EDGE_RISING>,
@@ -380,19 +367,19 @@
 
 		edma0_tptc0: tptc@2760000 {
 			compatible = "ti,k2g-edma3-tptc", "ti,edma3-tptc";
-			reg =	<0x02760000 0x400>;
+			reg = <0x02760000 0x400>;
 			power-domains = <&k2g_pds 0x3f>;
 		};
 
 		edma0_tptc1: tptc@2768000 {
 			compatible = "ti,k2g-edma3-tptc", "ti,edma3-tptc";
-			reg =	<0x02768000 0x400>;
+			reg = <0x02768000 0x400>;
 			power-domains = <&k2g_pds 0x3f>;
 		};
 
 		edma1: edma@2728000 {
 			compatible = "ti,k2g-edma3-tpcc", "ti,edma3-tpcc";
-			reg =	<0x02728000 0x8000>;
+			reg = <0x02728000 0x8000>;
 			reg-names = "edma3_cc";
 			interrupts = <GIC_SPI 208 IRQ_TYPE_EDGE_RISING>,
 					<GIC_SPI 219 IRQ_TYPE_EDGE_RISING>,
@@ -415,13 +402,13 @@
 
 		edma1_tptc0: tptc@27b0000 {
 			compatible = "ti,k2g-edma3-tptc", "ti,edma3-tptc";
-			reg =	<0x027b0000 0x400>;
+			reg = <0x027b0000 0x400>;
 			power-domains = <&k2g_pds 0x4f>;
 		};
 
 		edma1_tptc1: tptc@27b8000 {
 			compatible = "ti,k2g-edma3-tptc", "ti,edma3-tptc";
-			reg =	<0x027b8000 0x400>;
+			reg = <0x027b8000 0x400>;
 			power-domains = <&k2g_pds 0x4f>;
 		};
 
@@ -652,211 +639,6 @@
 			status = "disabled";
 			bus_freq = <2500000>;
 		};
-
-		pruss0: pruss@20a80000 {
-			compatible = "ti,k2g-pruss";
-			reg = <0x20a80000 0x40000>;
-			power-domains = <&k2g_pds 0x0014>;
-			#address-cells = <1>;
-			#size-cells = <1>;
-			ranges = <0x0 0x20a80000 0x40000>;
-			dma-ranges;
-			dma-coherent;
-
-			pruss0_mem: memories@0 {
-				reg = <0x0 0x2000>,
-				      <0x2000 0x2000>,
-				      <0x10000 0x10000>;
-				reg-names = "dram0", "dram1", "shrdram2";
-			};
-
-			pruss0_cfg: cfg@26000 {
-				compatible = "ti,pruss-cfg", "syscon";
-				reg = <0x26000 0x2000>;
-				#address-cells = <1>;
-				#size-cells = <1>;
-				ranges = <0x0 0x26000 0x2000>;
-
-				clocks {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
-					pruss0_iepclk_mux: iepclk-mux@30 {
-						reg = <0x30>;
-						#clock-cells = <0>;
-						clocks = <&k2g_clks 0x14 5>, /* icss_iep_clk */
-							 <&k2g_clks 0x14 0>; /* icss_vclk_clk */
-					};
-				};
-			};
-
-			pruss0_iep: iep@2e000 {
-				compatible = "ti,am5728-icss-iep";
-				reg = <0x2e000 0x31c>;
-				clocks = <&pruss0_iepclk_mux>;
-			};
-
-			pruss0_ecap: ecap@30000 {
-				compatible = "ti,pruss-ecap";
-				reg = <0x30000 0x60>;
-			};
-
-			pruss0_mii_rt: mii-rt@32000 {
-				compatible = "ti,pruss-mii", "syscon";
-				reg = <0x32000 0x70>;
-			};
-
-			pruss0_intc: interrupt-controller@20000 {
-				compatible = "ti,pruss-intc";
-				reg = <0x20000 0x2000>;
-				interrupt-controller;
-				#interrupt-cells = <3>;
-				interrupts = <GIC_SPI 224 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 225 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 226 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 227 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 228 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 230 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 231 IRQ_TYPE_EDGE_RISING>;
-				interrupt-names = "host_intr0", "host_intr1",
-						  "host_intr2", "host_intr3",
-						  "host_intr4",
-						  "host_intr6", "host_intr7";
-				ti,irqs-reserved = /bits/ 8 <0x20>; /* BIT(5) */
-			};
-
-			pru0_0: pru@34000 {
-				compatible = "ti,k2g-pru";
-				reg = <0x34000 0x3000>,
-				      <0x22000 0x400>,
-				      <0x22400 0x100>;
-				reg-names = "iram", "control", "debug";
-				firmware-name = "k2g-pru0_0-fw";
-			};
-
-			pru0_1: pru@38000 {
-				compatible = "ti,k2g-pru";
-				reg = <0x38000 0x3000>,
-				      <0x24000 0x400>,
-				      <0x24400 0x100>;
-				reg-names = "iram", "control", "debug";
-				firmware-name = "k2g-pru0_1-fw";
-			};
-
-			pruss0_mdio: mdio@32400 {
-				compatible = "ti,davinci_mdio";
-				reg = <0x32400 0x90>;
-				clocks = <&k2g_clks 0x0014 1>;
-				clock-names = "fck";
-				#address-cells = <1>;
-				#size-cells = <0>;
-				bus_freq = <2500000>;
-				status = "disabled";
-			};
-		};
-
-		pruss1: pruss@20ac0000 {
-			compatible = "ti,k2g-pruss";
-			reg = <0x20ac0000 0x40000>;
-			power-domains = <&k2g_pds 0x0015>;
-			#address-cells = <1>;
-			#size-cells = <1>;
-			ranges = <0x0 0x20ac0000 0x40000>;
-			dma-ranges;
-			dma-coherent;
-
-			pruss1_mem: memories@0 {
-				reg = <0x0 0x2000>,
-				      <0x2000 0x2000>,
-				      <0x10000 0x10000>;
-				reg-names = "dram0", "dram1", "shrdram2";
-			};
-
-			pruss1_cfg: cfg@26000 {
-				compatible = "ti,pruss-cfg", "syscon";
-				reg = <0x26000 0x2000>;
-				#address-cells = <1>;
-				#size-cells = <1>;
-				ranges = <0x0 0x26000 0x2000>;
-
-				clocks {
-					#address-cells = <1>;
-					#size-cells = <0>;
-
-					pruss1_iepclk_mux: iepclk-mux@30 {
-						reg = <0x30>;
-						#clock-cells = <0>;
-						clocks = <&k2g_clks 0x15 5>, /* icss_iep_clk */
-							 <&k2g_clks 0x15 0>; /* icss_vclk_clk */
-					};
-				};
-			};
-
-			pruss1_iep: iep@2e000 {
-				compatible = "ti,am5728-icss-iep";
-				reg = <0x2e000 0x31c>;
-				clocks = <&pruss1_iepclk_mux>;
-			};
-
-			pruss1_ecap: ecap@30000 {
-				compatible = "ti,pruss-ecap";
-				reg = <0x30000 0x60>;
-			};
-
-			pruss1_mii_rt: mii-rt@32000 {
-				compatible = "ti,pruss-mii", "syscon";
-				reg = <0x32000 0x70>;
-			};
-
-			pruss1_intc: interrupt-controller@20000 {
-				compatible = "ti,pruss-intc";
-				reg = <0x20000 0x2000>;
-				interrupt-controller;
-				#interrupt-cells = <3>;
-				interrupts = <GIC_SPI 232 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 233 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 234 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 235 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 236 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 238 IRQ_TYPE_EDGE_RISING>,
-					     <GIC_SPI 239 IRQ_TYPE_EDGE_RISING>;
-				interrupt-names = "host_intr0", "host_intr1",
-						  "host_intr2", "host_intr3",
-						  "host_intr4",
-						  "host_intr6", "host_intr7";
-				ti,irqs-reserved = /bits/ 8 <0x20>; /* BIT(5) */
-			};
-
-			pru1_0: pru@34000 {
-				compatible = "ti,k2g-pru";
-				reg = <0x34000 0x3000>,
-				      <0x22000 0x400>,
-				      <0x22400 0x100>;
-				reg-names = "iram", "control", "debug";
-				firmware-name = "k2g-pru1_0-fw";
-			};
-
-			pru1_1: pru@38000 {
-				compatible = "ti,k2g-pru";
-				reg = <0x38000 0x3000>,
-				      <0x24000 0x400>,
-				      <0x24400 0x100>;
-				reg-names = "iram", "control", "debug";
-				firmware-name = "k2g-pru1_1-fw";
-			};
-
-			pruss1_mdio: mdio@32400 {
-				compatible = "ti,davinci_mdio";
-				reg = <0x32400 0x90>;
-				clocks = <&k2g_clks 0x0015 1>;
-				clock-names = "fck";
-				#address-cells = <1>;
-				#size-cells = <0>;
-				bus_freq = <2500000>;
-				status = "disabled";
-			};
-		};
-
 		#include "keystone-k2g-netcp.dtsi"
 	};
 };

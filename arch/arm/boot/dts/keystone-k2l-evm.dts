@@ -24,13 +24,6 @@
 			reusable;
 			status = "okay";
 		};
-
-		dsp_common_mpm_memory: dsp-common-mpm-memory@820000000 {
-			compatible = "ti,keystone-dsp-mem-pool";
-			reg = <0x00000008 0x20000000 0x00000000 0x10000000>;
-			no-map;
-			status = "okay";
-		};
 	};
 };
 
@@ -117,10 +110,10 @@
 };
 
 &spi0 {
-	nor_flash: n25q128a11@0 {
+	nor_flash: flash@0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
-		compatible = "Micron,n25q128a11";
+		compatible = "micron,n25q128a11", "jedec,spi-nor";
 		spi-max-frequency = <54000000>;
 		m25p,fast-read;
 		reg = <0>;

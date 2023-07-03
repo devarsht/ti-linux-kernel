@@ -7,8 +7,9 @@
 
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
-#include <dt-bindings/pinctrl/k3.h>
 #include <dt-bindings/soc/ti,sci_pm_domain.h>
+
+#include "k3-pinctrl.h"
 
 / {
 	model = "Texas Instruments K3 J7200 SoC";
@@ -30,6 +31,8 @@
 		serial9 = &main_uart7;
 		serial10 = &main_uart8;
 		serial11 = &main_uart9;
+		mmc0 = &main_sdhci0;
+		mmc1 = &main_sdhci1;
 	};
 
 	chosen { };
@@ -62,10 +65,6 @@
 			d-cache-line-size = <64>;
 			d-cache-sets = <256>;
 			next-level-cache = <&L2_0>;
-			clocks = <&k3_clks 202 2>;
-			clock-names = "cpu";
-			operating-points-v2 = <&cpu0_opp_table>;
-			#cooling-cells = <2>; /* min followed by max */
 		};
 
 		cpu1: cpu@1 {
@@ -80,36 +79,13 @@
 			d-cache-line-size = <64>;
 			d-cache-sets = <256>;
 			next-level-cache = <&L2_0>;
-			operating-points-v2 = <&cpu0_opp_table>;
-			#cooling-cells = <2>; /* min followed by max */
-			clocks = <&k3_clks 203 0>;
-			clock-names = "cpu";
-		};
-	};
-
-	cpu0_opp_table: opp-table {
-		compatible = "operating-points-v2";
-
-		opp4-2000000000 {
-			opp-hz = /bits/ 64 <2000000000>;
-		};
-
-		opp3-1500000000 {
-			opp-hz = /bits/ 64 <1500000000>;
-		};
-
-		opp2-1000000000 {
-			opp-hz = /bits/ 64 <1000000000>;
-		};
-
-		opp1-750000000 {
-			opp-hz = /bits/ 64 <750000000>;
 		};
 	};
 
 	L2_0: l2-cache0 {
 		compatible = "cache";
 		cache-level = <2>;
+		cache-unified;
 		cache-size = <0x100000>;
 		cache-line-size = <64>;
 		cache-sets = <1024>;
@@ -194,8 +170,6 @@
 				 <0x07 0x00000000 0x07 0x00000000 0x01 0x00000000>; /* FSS OSPI1 data region 3 */
 		};
 	};
-
-	#include "k3-j7200-thermal.dtsi"
 };
 
 /* Now include the peripherals for each bus segments */

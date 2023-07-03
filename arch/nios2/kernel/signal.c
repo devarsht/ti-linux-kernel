@@ -15,7 +15,7 @@
 #include <linux/uaccess.h>
 #include <linux/unistd.h>
 #include <linux/personality.h>
-#include <linux/tracehook.h>
+#include <linux/resume_user_mode.h>
 
 #include <asm/ucontext.h>
 #include <asm/cacheflush.h>
@@ -309,7 +309,8 @@ asmlinkage int do_notify_resume(struct pt_regs *regs)
 	if (!user_mode(regs))
 		return 0;
 
-	if (test_thread_flag(TIF_SIGPENDING)) {
+	if (test_thread_flag(TIF_SIGPENDING) ||
+	    test_thread_flag(TIF_NOTIFY_SIGNAL)) {
 		int restart = do_signal(regs);
 
 		if (unlikely(restart)) {
@@ -321,7 +322,7 @@ asmlinkage int do_notify_resume(struct pt_regs *regs)
 			return restart;
 		}
 	} else if (test_thread_flag(TIF_NOTIFY_RESUME))
-		tracehook_notify_resume(regs);
+		resume_user_mode_work(regs);
 
 	return 0;
 }

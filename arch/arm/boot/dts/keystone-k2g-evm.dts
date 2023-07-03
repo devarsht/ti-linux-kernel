@@ -22,13 +22,6 @@
 		#size-cells = <2>;
 		ranges;
 
-		dsp_common_mpm_memory: dsp-common-mpm-memory@81d000000 {
-			compatible = "ti,keystone-dsp-mem-pool";
-			reg = <0x00000008 0x1d000000 0x00000000 0x2800000>;
-			no-map;
-			status = "okay";
-		};
-
 		dsp_common_memory: dsp-common-memory@81f800000 {
 			compatible = "shared-dma-pool";
 			reg = <0x00000008 0x1f800000 0x00000000 0x800000>;
@@ -399,7 +392,7 @@
 	pinctrl-0 = <&qspi_pins>;
 	cdns,rclk-en;
 
-	flash0: m25p80@0 {
+	flash0: flash@0 {
 		compatible = "s25fl512s", "jedec,spi-nor";
 		reg = <0>;
 		spi-tx-bus-width = <1>;
@@ -551,20 +544,15 @@
 	};
 };
 
-&k2g_clks {
-	/* on the board 22.5792MHz is connected to AUDOSC_IN */
-	assigned-clocks = <&k2g_clks 0x4c 2>;
-	assigned-clock-rates = <22579200>;
-};
-
 &mcasp2 {
 	#sound-dai-cells = <0>;
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&mcasp2_pins>;
 
-	assigned-clocks = <&k2g_clks 0x6 1>;
-	assigned-clock-parents = <&k2g_clks 0x6 2>;
+	assigned-clocks = <&k2g_clks 0x4c 2>, <&k2g_clks 0x6 1>;
+	assigned-clock-parents = <0>, <&k2g_clks 0x6 2>;
+	assigned-clock-rates = <22579200>, <0>;
 
 	status = "okay";
 

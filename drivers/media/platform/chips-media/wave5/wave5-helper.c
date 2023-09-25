@@ -7,6 +7,24 @@
 
 #include "wave5-helper.h"
 
+const char *state_to_str(enum vpu_instance_state state)
+{
+	switch (state) {
+	case VPU_INST_STATE_NONE:
+		return "NONE";
+	case VPU_INST_STATE_OPEN:
+		return "OPEN";
+	case VPU_INST_STATE_INIT_SEQ:
+		return "INIT_SEQ";
+	case VPU_INST_STATE_PIC_RUN:
+		return "PIC_RUN";
+	case VPU_INST_STATE_STOP:
+		return "STOP";
+	default:
+		return "UNKNOWN";
+	}
+}
+
 void wave5_cleanup_instance(struct vpu_instance *inst)
 {
 	int i;
@@ -14,23 +32,19 @@ void wave5_cleanup_instance(struct vpu_instance *inst)
 	if (list_is_singular(&inst->list))
 		wave5_vdi_free_sram(inst->dev);
 
-	for (i = 0; i < inst->dst_buf_count; i++)
-		wave5_vdi_free_dma_memory(inst->dev, &inst->frame_vbuf[i]);
+	for (i = 0; i < inst->fbc_buf_count; i++)
+		wave5_vpu_dec_reset_framebuffer(inst, i);
 
 	wave5_vdi_free_dma_memory(inst->dev, &inst->bitstream_vbuf);
 	v4l2_ctrl_handler_free(&inst->v4l2_ctrl_hdl);
-	if (inst->v4l2_m2m_dev != NULL)
-		v4l2_m2m_release(inst->v4l2_m2m_dev);
-	if (inst->v4l2_fh.vdev != NULL) {
+	if (inst->v4l2_fh.vdev) {
 		v4l2_fh_del(&inst->v4l2_fh);
 		v4l2_fh_exit(&inst->v4l2_fh);
 	}
 	list_del_init(&inst->list);
 	kfifo_free(&inst->irq_status);
 	ida_free(&inst->dev->inst_ida, inst->id);
-	kfree(inst->map_index);
-	kfree(inst->mapped_dma_addr);
-	kfree(inst->inst_lock);
+	kfree(inst->codec_info);
 	kfree(inst);
 }
 
@@ -39,28 +53,16 @@ int wave5_vpu_release_device(struct file *filp,
 			     char *name)
 {
 	struct vpu_instance *inst = wave5_to_vpu_inst(filp->private_data);
-	struct vpu_device *dev = inst->dev;
-	int ret = 0;
 
 	v4l2_m2m_ctx_release(inst->v4l2_fh.m2m_ctx);
 	if (inst->state != VPU_INST_STATE_NONE) {
 		u32 fail_res;
-		int retry_count = 10;
+		int ret;
 
-		do {
-			fail_res = 0;
-			ret = close_func(inst, &fail_res);
-			if (ret && ret != -EIO)
-				break;
-			if (fail_res != WAVE5_SYSERR_VPU_STILL_RUNNING)
-				break;
-			if (!wave5_vpu_wait_interrupt(inst, VPU_DEC_TIMEOUT))
-				break;
-		} while (--retry_count);
-
+		ret = close_func(inst, &fail_res);
 		if (fail_res == WAVE5_SYSERR_VPU_STILL_RUNNING) {
 			dev_err(inst->dev->dev, "%s close failed, device is still running\n",
-				 name);
+				name);
 			return -EBUSY;
 		}
 		if (ret && ret != -EIO) {
@@ -70,20 +72,8 @@ int wave5_vpu_release_device(struct file *filp,
 	}
 
 	wave5_cleanup_instance(inst);
-	if (dev->irq < 0) {
-		ret = mutex_lock_interruptible(&dev->dev_lock);
-		if (ret)
-			return ret;
 
-		if (list_empty(&dev->instances)) {
-			dev_dbg(dev->dev, "Disabling the hrtimer\n");
-			hrtimer_cancel(&dev->hrtimer);
-		}
-
-		mutex_unlock(&dev->dev_lock);
-	}
-
-	return ret;
+	return 0;
 }
 
 int wave5_vpu_queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_queue *dst_vq,
@@ -97,7 +87,7 @@ int wave5_vpu_queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_queue 
 	src_vq->mem_ops = &vb2_dma_contig_memops;
 	src_vq->ops = ops;
 	src_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
-	src_vq->buf_struct_size = sizeof(struct vpu_buffer);
+	src_vq->buf_struct_size = sizeof(struct vpu_src_buffer);
 	src_vq->drv_priv = inst;
 	src_vq->lock = &inst->dev->dev_lock;
 	src_vq->dev = inst->dev->v4l2_dev.dev;
@@ -110,7 +100,7 @@ int wave5_vpu_queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_queue 
 	dst_vq->mem_ops = &vb2_dma_contig_memops;
 	dst_vq->ops = ops;
 	dst_vq->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_COPY;
-	dst_vq->buf_struct_size = sizeof(struct vpu_buffer);
+	dst_vq->buf_struct_size = sizeof(struct vpu_src_buffer);
 	dst_vq->drv_priv = inst;
 	dst_vq->lock = &inst->dev->dev_lock;
 	dst_vq->dev = inst->dev->v4l2_dev.dev;
@@ -191,4 +181,16 @@ const struct vpu_format *wave5_find_vpu_fmt_by_idx(unsigned int idx,
 		return NULL;
 
 	return &fmt_list[idx];
+}
+
+enum wave_std wave5_to_vpu_std(unsigned int v4l2_pix_fmt, enum vpu_instance_type type)
+{
+	switch (v4l2_pix_fmt) {
+	case V4L2_PIX_FMT_H264:
+		return type == VPU_INST_TYPE_DEC ? W_AVC_DEC : W_AVC_ENC;
+	case V4L2_PIX_FMT_HEVC:
+		return type == VPU_INST_TYPE_DEC ? W_HEVC_DEC : W_HEVC_ENC;
+	default:
+		return STD_UNKNOWN;
+	}
 }

@@ -73,16 +73,36 @@ static const struct vpu_format enc_fmt_list[FMT_TYPES][MAX_FMTS] = {
 	}
 };
 
-static enum wave_std wave5_to_vpu_wavestd(unsigned int v4l2_pix_fmt)
+static int switch_state(struct vpu_instance *inst, enum vpu_instance_state state)
 {
-	switch (v4l2_pix_fmt) {
-	case V4L2_PIX_FMT_H264:
-		return W_AVC_ENC;
-	case V4L2_PIX_FMT_HEVC:
-		return W_HEVC_ENC;
-	default:
-		return STD_UNKNOWN;
-	}
+	switch (state) {
+	case VPU_INST_STATE_NONE:
+		goto invalid_state_switch;
+	case VPU_INST_STATE_OPEN:
+		if (inst->state != VPU_INST_STATE_NONE)
+			goto invalid_state_switch;
+		break;
+	case VPU_INST_STATE_INIT_SEQ:
+		if (inst->state != VPU_INST_STATE_OPEN && inst->state != VPU_INST_STATE_STOP)
+			goto invalid_state_switch;
+		break;
+	case VPU_INST_STATE_PIC_RUN:
+		if (inst->state != VPU_INST_STATE_INIT_SEQ)
+			goto invalid_state_switch;
+		break;
+	case VPU_INST_STATE_STOP:
+		break;
+	};
+
+	dev_dbg(inst->dev->dev, "Switch state from %s to %s.\n",
+		state_to_str(inst->state), state_to_str(state));
+	inst->state = state;
+	return 0;
+
+invalid_state_switch:
+	WARN(1, "Invalid state switch from %s to %s.\n",
+	     state_to_str(inst->state), state_to_str(state));
+	return -EINVAL;
 }
 
 static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned int width,
@@ -125,44 +145,40 @@ static void wave5_update_pix_fmt(struct v4l2_pix_format_mplane *pix_mp, unsigned
 	}
 }
 
-static void wave5_vpu_enc_start_encode(struct vpu_instance *inst)
+static int start_encode(struct vpu_instance *inst, u32 *fail_res)
 {
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
 	int ret;
 	struct vb2_v4l2_buffer *src_buf;
 	struct vb2_v4l2_buffer *dst_buf;
-	struct vpu_buffer *src_vbuf;
-	struct vpu_buffer *dst_vbuf;
 	struct frame_buffer frame_buf;
 	struct enc_param pic_param;
 	u32 stride = ALIGN(inst->dst_fmt.width, 32);
 	u32 luma_size = (stride * inst->dst_fmt.height);
 	u32 chroma_size = ((stride / 2) * (inst->dst_fmt.height / 2));
-	u32 fail_res;
 
 	memset(&pic_param, 0, sizeof(struct enc_param));
 	memset(&frame_buf, 0, sizeof(struct frame_buffer));
 
-	src_vbuf = list_first_entry_or_null(&inst->avail_src_bufs, struct vpu_buffer, list);
-	dst_vbuf = list_first_entry_or_null(&inst->avail_dst_bufs, struct vpu_buffer, list);
-	if (!dst_vbuf) {
-		dev_dbg(inst->dev->dev, "no valid dst buf\n");
-		return;
+	dst_buf = v4l2_m2m_next_dst_buf(m2m_ctx);
+	if (!dst_buf) {
+		dev_dbg(inst->dev->dev, "%s: No destination buffer found\n", __func__);
+		return -EAGAIN;
 	}
 
-	dst_buf = &dst_vbuf->v4l2_m2m_buf.vb;
 	pic_param.pic_stream_buffer_addr =
 		vb2_dma_contig_plane_dma_addr(&dst_buf->vb2_buf, 0);
 	pic_param.pic_stream_buffer_size =
 		vb2_plane_size(&dst_buf->vb2_buf, 0);
 
-	if (!src_vbuf) {
-		dev_dbg(inst->dev->dev, "no valid src buf\n");
-		if (inst->state == VPU_INST_STATE_STOP)
+	src_buf = v4l2_m2m_next_src_buf(m2m_ctx);
+	if (!src_buf) {
+		dev_dbg(inst->dev->dev, "%s: No source buffer found\n", __func__);
+		if (m2m_ctx->is_draining)
 			pic_param.src_end_flag = 1;
 		else
-			return;
+			return -EAGAIN;
 	} else {
-		src_buf = &src_vbuf->v4l2_m2m_buf.vb;
 		if (inst->src_fmt.num_planes == 1) {
 			frame_buf.buf_y =
 				vb2_dma_contig_plane_dma_addr(&src_buf->vb2_buf, 0);
@@ -188,59 +204,54 @@ static void wave5_vpu_enc_start_encode(struct vpu_instance *inst)
 
 	pic_param.source_frame = &frame_buf;
 	pic_param.code_option.implicit_header_encode = 1;
-	ret = wave5_vpu_enc_start_one_frame(inst, &pic_param, &fail_res);
+	pic_param.code_option.encode_aud = inst->encode_aud;
+	ret = wave5_vpu_enc_start_one_frame(inst, &pic_param, fail_res);
 	if (ret) {
-		if (fail_res == WAVE5_SYSERR_QUEUEING_FAIL)
-			return;
+		if (*fail_res == WAVE5_SYSERR_QUEUEING_FAIL)
+			return -EINVAL;
 
 		dev_dbg(inst->dev->dev, "%s: wave5_vpu_enc_start_one_frame fail: %d\n",
 			__func__, ret);
-		src_buf = v4l2_m2m_src_buf_remove(inst->v4l2_fh.m2m_ctx);
+		src_buf = v4l2_m2m_src_buf_remove(m2m_ctx);
 		if (!src_buf) {
 			dev_dbg(inst->dev->dev,
 				"%s: Removing src buf failed, the queue is empty\n",
 				__func__);
-			return;
+			return -EINVAL;
 		}
-		dst_buf = v4l2_m2m_dst_buf_remove(inst->v4l2_fh.m2m_ctx);
+		dst_buf = v4l2_m2m_dst_buf_remove(m2m_ctx);
 		if (!dst_buf) {
 			dev_dbg(inst->dev->dev,
 				"%s: Removing dst buf failed, the queue is empty\n",
 				__func__);
-			return;
+			return -EINVAL;
 		}
-		inst->state = VPU_INST_STATE_STOP;
+		switch_state(inst, VPU_INST_STATE_STOP);
+		dst_buf->vb2_buf.timestamp = src_buf->vb2_buf.timestamp;
 		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
 		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
 	} else {
 		dev_dbg(inst->dev->dev, "%s: wave5_vpu_enc_start_one_frame success\n",
 			__func__);
-		if (src_vbuf) {
-			src_vbuf->consumed = true;
-			list_del_init(&src_vbuf->list);
-		}
-		if (dst_vbuf) {
-			dst_vbuf->consumed = true;
-			list_del_init(&dst_vbuf->list);
-		}
+		/*
+		 * Remove the source buffer from the ready-queue now and finish
+		 * it in the videobuf2 framework once the index is returned by the
+		 * firmware in finish_encode
+		 */
+		if (src_buf)
+			v4l2_m2m_src_buf_remove_by_idx(m2m_ctx, src_buf->vb2_buf.index);
 	}
-}
 
-static void wave5_vpu_enc_stop_encode(struct vpu_instance *inst)
-{
-	inst->state = VPU_INST_STATE_STOP;
-
-	v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
+	return 0;
 }
 
 static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 {
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
 	int ret;
 	struct enc_output_info enc_output_info;
-	u32 irq_status;
-
-	if (kfifo_out(&inst->irq_status, &irq_status, sizeof(int)))
-		wave5_vpu_clear_interrupt_ex(inst, irq_status);
+	struct vb2_v4l2_buffer *src_buf = NULL;
+	struct vb2_v4l2_buffer *dst_buf = NULL;
 
 	ret = wave5_vpu_enc_get_output_info(inst, &enc_output_info);
 	if (ret) {
@@ -250,35 +261,59 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 		return;
 	}
 
-	if (enc_output_info.enc_src_idx >= 0) {
-		struct vb2_v4l2_buffer *src_buf =
-			v4l2_m2m_src_buf_remove_by_idx(inst->v4l2_fh.m2m_ctx,
-						       enc_output_info.enc_src_idx);
+	dev_dbg(inst->dev->dev,
+		"%s: pic_type %i recon_idx %i src_idx %i pic_byte %u pts %llu\n",
+		__func__,  enc_output_info.pic_type, enc_output_info.recon_frame_index,
+		enc_output_info.enc_src_idx, enc_output_info.enc_pic_byte, enc_output_info.pts);
 
-		inst->timestamp = src_buf->vb2_buf.timestamp;
-		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+	/*
+	 * The source buffer will not be found in the ready-queue as it has been
+	 * dropped after sending of the encode firmware command, locate it in
+	 * the videobuf2 queue directly
+	 */
+	if (enc_output_info.enc_src_idx >= 0) {
+		struct vb2_buffer *vb = vb2_get_buffer(v4l2_m2m_get_src_vq(m2m_ctx),
+						       enc_output_info.enc_src_idx);
+		if (vb->state != VB2_BUF_STATE_ACTIVE)
+			dev_warn(inst->dev->dev,
+				 "%s: encoded buffer (%d) was not in ready queue %i.",
+				 __func__, enc_output_info.enc_src_idx, vb->state);
+		else
+			src_buf = to_vb2_v4l2_buffer(vb);
+
+		if (src_buf) {
+			inst->timestamp = src_buf->vb2_buf.timestamp;
+			v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
+		} else {
+			dev_warn(inst->dev->dev, "%s: no source buffer with index: %d found\n",
+				 __func__, enc_output_info.enc_src_idx);
+		}
 	}
 
+	dst_buf = v4l2_m2m_dst_buf_remove(m2m_ctx);
 	if (enc_output_info.recon_frame_index == RECON_IDX_FLAG_ENC_END) {
-		struct vb2_v4l2_buffer *dst_buf =
-			v4l2_m2m_dst_buf_remove(inst->v4l2_fh.m2m_ctx);
 		static const struct v4l2_event vpu_event_eos = {
 			.type = V4L2_EVENT_EOS
 		};
 
-		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
-		dst_buf->vb2_buf.timestamp = inst->timestamp;
-		dst_buf->field = V4L2_FIELD_NONE;
-		dst_buf->flags |= V4L2_BUF_FLAG_LAST;
-		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
+		if (dst_buf) {
+			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
+			dst_buf->field = V4L2_FIELD_NONE;
+			v4l2_m2m_last_buffer_done(m2m_ctx, dst_buf);
+		} else {
+			WARN(1, "A job have been run without destination buffer.\n");
+		}
 
-		inst->eos = true;
 		v4l2_event_queue_fh(&inst->v4l2_fh, &vpu_event_eos);
 
-		v4l2_m2m_job_finish(inst->v4l2_m2m_dev, inst->v4l2_fh.m2m_ctx);
+		v4l2_m2m_job_finish(inst->v4l2_m2m_dev, m2m_ctx);
 	} else {
-		struct vb2_v4l2_buffer *dst_buf =
-			v4l2_m2m_dst_buf_remove(inst->v4l2_fh.m2m_ctx);
+		if (!dst_buf) {
+			dev_warn(inst->dev->dev, "No bitstream buffer.");
+			v4l2_m2m_job_finish(inst->v4l2_m2m_dev, m2m_ctx);
+			return;
+		}
+
 		vb2_set_plane_payload(&dst_buf->vb2_buf, 0, enc_output_info.bitstream_size);
 
 		dst_buf->vb2_buf.timestamp = inst->timestamp;
@@ -299,6 +334,8 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 
 		dev_dbg(inst->dev->dev, "%s: frame_cycle %8u\n",
 			__func__, enc_output_info.frame_cycle);
+
+		v4l2_m2m_job_finish(inst->v4l2_m2m_dev, m2m_ctx);
 	}
 }
 
@@ -599,6 +636,7 @@ static int wave5_vpu_enc_s_selection(struct file *file, void *fh, struct v4l2_se
 static int wave5_vpu_enc_encoder_cmd(struct file *file, void *fh, struct v4l2_encoder_cmd *ec)
 {
 	struct vpu_instance *inst = wave5_to_vpu_inst(fh);
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
 	int ret;
 
 	ret = v4l2_m2m_ioctl_try_encoder_cmd(file, fh, ec);
@@ -610,8 +648,14 @@ static int wave5_vpu_enc_encoder_cmd(struct file *file, void *fh, struct v4l2_en
 
 	switch (ec->cmd) {
 	case V4L2_ENC_CMD_STOP:
-		inst->state = VPU_INST_STATE_STOP;
-		inst->ops->start_process(inst);
+		if (m2m_ctx->is_draining)
+			return -EBUSY;
+
+		if (m2m_ctx->has_stopped)
+			return 0;
+
+		m2m_ctx->last_src_buf = v4l2_m2m_last_src_buf(m2m_ctx);
+		m2m_ctx->is_draining = true;
 		break;
 	case V4L2_ENC_CMD_START:
 		break;
@@ -711,6 +755,9 @@ static int wave5_vpu_enc_s_ctrl(struct v4l2_ctrl *ctrl)
 	dev_dbg(inst->dev->dev, "%s: name: %s | value: %d\n", __func__, ctrl->name, ctrl->val);
 
 	switch (ctrl->id) {
+	case V4L2_CID_MPEG_VIDEO_AU_DELIMITER:
+		inst->encode_aud = ctrl->val;
+		break;
 	case V4L2_CID_HFLIP:
 		inst->mirror_direction |= (ctrl->val << 1);
 		break;
@@ -1043,6 +1090,67 @@ static const struct v4l2_ctrl_ops wave5_vpu_enc_ctrl_ops = {
 	.s_ctrl = wave5_vpu_enc_s_ctrl,
 };
 
+static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
+				     unsigned int *num_planes, unsigned int sizes[],
+				     struct device *alloc_devs[])
+{
+	struct vpu_instance *inst = vb2_get_drv_priv(q);
+	struct v4l2_pix_format_mplane inst_format =
+		(q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) ? inst->src_fmt : inst->dst_fmt;
+	unsigned int i;
+
+	dev_dbg(inst->dev->dev, "%s: num_buffers: %u | num_planes: %u | type: %u\n", __func__,
+		*num_buffers, *num_planes, q->type);
+
+	if (*num_planes) {
+		if (inst_format.num_planes != *num_planes)
+			return -EINVAL;
+
+		for (i = 0; i < *num_planes; i++) {
+			if (sizes[i] < inst_format.plane_fmt[i].sizeimage)
+				return -EINVAL;
+		}
+	} else {
+		*num_planes = inst_format.num_planes;
+		for (i = 0; i < *num_planes; i++) {
+			sizes[i] = inst_format.plane_fmt[i].sizeimage;
+			dev_dbg(inst->dev->dev, "%s: size[%u]: %u\n", __func__, i, sizes[i]);
+		}
+	}
+
+	dev_dbg(inst->dev->dev, "%s: size: %u\n", __func__, sizes[0]);
+
+	if (inst->state == VPU_INST_STATE_INIT_SEQ &&
+	    q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+		if (*num_buffers > inst->src_buf_count &&
+		    *num_buffers < WAVE5_MAX_FBS)
+			inst->src_buf_count = *num_buffers;
+
+		*num_buffers = inst->src_buf_count;
+		dev_dbg(inst->dev->dev, "%s: src buf num: %u", __func__, *num_buffers);
+	}
+
+	return 0;
+}
+
+static void wave5_vpu_enc_buf_queue(struct vb2_buffer *vb)
+{
+	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
+	struct vpu_instance *inst = vb2_get_drv_priv(vb->vb2_queue);
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
+
+	dev_dbg(inst->dev->dev, "%s: type: %4u index: %4u size: ([0]=%4lu, [1]=%4lu, [2]=%4lu)\n",
+		__func__, vb->type, vb->index, vb2_plane_size(&vbuf->vb2_buf, 0),
+		vb2_plane_size(&vbuf->vb2_buf, 1), vb2_plane_size(&vbuf->vb2_buf, 2));
+
+	if (vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
+		vbuf->sequence = inst->queued_src_buf_num++;
+	else
+		vbuf->sequence = inst->queued_dst_buf_num++;
+
+	v4l2_m2m_buf_queue(m2m_ctx, vbuf);
+}
+
 static void wave5_set_enc_openparam(struct enc_open_param *open_param,
 				    struct vpu_instance *inst)
 {
@@ -1064,8 +1172,6 @@ static void wave5_set_enc_openparam(struct enc_open_param *open_param,
 	open_param->wave_param.rdo_skip = 1;
 	open_param->wave_param.lambda_scaling_enable = 1;
 
-	open_param->stream_endian = VPU_STREAM_ENDIAN;
-	open_param->source_endian = VPU_SOURCE_ENDIAN;
 	open_param->line_buf_int_en = true;
 	open_param->pic_width = inst->dst_fmt.width;
 	open_param->pic_height = inst->dst_fmt.height;
@@ -1141,48 +1247,100 @@ static void wave5_set_enc_openparam(struct enc_open_param *open_param,
 	}
 }
 
-static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buffers,
-				     unsigned int *num_planes, unsigned int sizes[],
-				     struct device *alloc_devs[])
+static int initialize_sequence(struct vpu_instance *inst)
 {
-	struct vpu_instance *inst = vb2_get_drv_priv(q);
-	struct v4l2_pix_format_mplane inst_format =
-		(q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) ? inst->src_fmt : inst->dst_fmt;
-	unsigned int i;
+	struct enc_initial_info initial_info;
+	struct v4l2_ctrl *ctrl;
 	int ret;
 
-	dev_dbg(inst->dev->dev, "%s: num_buffers: %u | num_planes: %u | type: %u\n", __func__,
-		*num_buffers, *num_planes, q->type);
-
-	if (*num_planes) {
-		if (inst_format.num_planes != *num_planes)
-			return -EINVAL;
-
-		for (i = 0; i < *num_planes; i++) {
-			if (sizes[i] < inst_format.plane_fmt[i].sizeimage)
-				return -EINVAL;
-		}
-	} else {
-		*num_planes = inst_format.num_planes;
-		for (i = 0; i < *num_planes; i++) {
-			sizes[i] = inst_format.plane_fmt[i].sizeimage;
-			dev_dbg(inst->dev->dev, "%s: size[%u]: %u\n", __func__, i, sizes[i]);
-		}
+	ret = wave5_vpu_enc_issue_seq_init(inst);
+	if (ret) {
+		dev_err(inst->dev->dev, "%s: wave5_vpu_enc_issue_seq_init, fail: %d\n",
+			__func__, ret);
+		return ret;
 	}
 
-	dev_dbg(inst->dev->dev, "%s: size: %u\n", __func__, sizes[0]);
+	if (wave5_vpu_wait_interrupt(inst, VPU_ENC_TIMEOUT) < 0) {
+		dev_err(inst->dev->dev, "%s: wave5_vpu_wait_interrupt failed\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = wave5_vpu_enc_complete_seq_init(inst, &initial_info);
+	if (ret)
+		return ret;
+
+	dev_dbg(inst->dev->dev, "%s: min_frame_buffer: %u | min_source_buffer: %u\n",
+		__func__, initial_info.min_frame_buffer_count,
+		initial_info.min_src_frame_count);
+	inst->min_src_buf_count = initial_info.min_src_frame_count +
+				  COMMAND_QUEUE_DEPTH;
+
+	ctrl = v4l2_ctrl_find(&inst->v4l2_ctrl_hdl,
+			      V4L2_CID_MIN_BUFFERS_FOR_OUTPUT);
+	if (ctrl)
+		v4l2_ctrl_s_ctrl(ctrl, inst->min_src_buf_count);
+
+	inst->fbc_buf_count = initial_info.min_frame_buffer_count;
+	inst->src_buf_count = inst->min_src_buf_count;
+
+	return 0;
+}
+
+static int prepare_fb(struct vpu_instance *inst)
+{
+	u32 fb_stride = ALIGN(inst->dst_fmt.width, 32);
+	u32 fb_height = ALIGN(inst->dst_fmt.height, 32);
+	int i, ret = 0;
+
+	for (i = 0; i < inst->fbc_buf_count; i++) {
+		u32 luma_size = fb_stride * fb_height;
+		u32 chroma_size = ALIGN(fb_stride / 2, 16) * fb_height;
+
+		inst->frame_vbuf[i].size = luma_size + chroma_size;
+		ret = wave5_vdi_allocate_dma_memory(inst->dev, &inst->frame_vbuf[i]);
+		if (ret < 0) {
+			dev_err(inst->dev->dev, "%s: failed to allocate FBC buffer %zu\n",
+				__func__, inst->frame_vbuf[i].size);
+			goto free_buffers;
+		}
+
+		inst->frame_buf[i].buf_y = inst->frame_vbuf[i].daddr;
+		inst->frame_buf[i].buf_cb = (dma_addr_t)-1;
+		inst->frame_buf[i].buf_cr = (dma_addr_t)-1;
+		inst->frame_buf[i].update_fb_info = true;
+		inst->frame_buf[i].size = inst->frame_vbuf[i].size;
+	}
+
+	ret = wave5_vpu_enc_register_frame_buffer(inst, inst->fbc_buf_count, fb_stride,
+						  fb_height, COMPRESSED_FRAME_MAP);
+	if (ret) {
+		dev_err(inst->dev->dev,
+			"%s: wave5_vpu_enc_register_frame_buffer, fail: %d\n",
+			__func__, ret);
+		goto free_buffers;
+	}
+
+	return 0;
+free_buffers:
+	for (i = 0; i < inst->fbc_buf_count; i++)
+		wave5_vpu_dec_reset_framebuffer(inst, i);
+	return ret;
+}
+
+static int wave5_vpu_enc_start_streaming(struct vb2_queue *q, unsigned int count)
+{
+	struct vpu_instance *inst = vb2_get_drv_priv(q);
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
+	int ret;
+
+	v4l2_m2m_update_start_streaming_state(m2m_ctx, q);
 
 	if (inst->state == VPU_INST_STATE_NONE && q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		unsigned int non_linear_num = 0;
-		u32 fb_stride = 0;
-		u32 fb_height = 0;
 		struct enc_open_param open_param;
-		struct enc_initial_info initial_info;
-		struct v4l2_ctrl *ctrl;
 
 		memset(&open_param, 0, sizeof(struct enc_open_param));
 
-		inst->std = wave5_to_vpu_wavestd(inst->dst_fmt.pixelformat);
+		inst->std = wave5_to_vpu_std(inst->dst_fmt.pixelformat, inst->type);
 		if (inst->std == STD_UNKNOWN) {
 			dev_warn(inst->dev->dev, "unsupported pixelformat: %.4s\n",
 				 (char *)&inst->dst_fmt.pixelformat);
@@ -1198,8 +1356,6 @@ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buff
 			return ret;
 		}
 
-		inst->state = VPU_INST_STATE_OPEN;
-
 		if (inst->mirror_direction) {
 			wave5_vpu_enc_give_command(inst, ENABLE_MIRRORING, NULL);
 			wave5_vpu_enc_give_command(inst, SET_MIRROR_DIRECTION,
@@ -1210,135 +1366,72 @@ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buff
 			wave5_vpu_enc_give_command(inst, SET_ROTATION_ANGLE, &inst->rot_angle);
 		}
 
-		ret = wave5_vpu_enc_issue_seq_init(inst);
-		if (ret) {
-			dev_dbg(inst->dev->dev, "%s: wave5_vpu_enc_issue_seq_init, fail: %d\n",
-				__func__, ret);
-			return ret;
-		}
-
-		if (wave5_vpu_wait_interrupt(inst, VPU_ENC_TIMEOUT) < 0) {
-			dev_dbg(inst->dev->dev, "%s: wave5_vpu_wait_interrupt failed\n", __func__);
-			return -EINVAL;
-		}
-
-		ret = wave5_vpu_enc_complete_seq_init(inst, &initial_info);
-		if (ret)
-			return ret;
-
-		dev_dbg(inst->dev->dev, "%s: min_frame_buffer: %u | min_source_buffer: %u\n",
-			__func__, initial_info.min_frame_buffer_count,
-			initial_info.min_src_frame_count);
-		inst->state = VPU_INST_STATE_INIT_SEQ;
-		inst->min_src_buf_count = initial_info.min_src_frame_count +
-					  COMMAND_QUEUE_DEPTH;
-
-		ctrl = v4l2_ctrl_find(&inst->v4l2_ctrl_hdl,
-				      V4L2_CID_MIN_BUFFERS_FOR_OUTPUT);
-		if (ctrl)
-			v4l2_ctrl_s_ctrl(ctrl, inst->min_src_buf_count);
-
-		inst->fbc_buf_count = initial_info.min_frame_buffer_count;
-		inst->src_buf_count = inst->min_src_buf_count;
-
-		if (*num_buffers > inst->src_buf_count)
-			inst->src_buf_count = *num_buffers;
-
-		*num_buffers = inst->src_buf_count;
-		non_linear_num = inst->fbc_buf_count;
-
-		fb_stride = ALIGN(inst->dst_fmt.width, 32);
-		fb_height = ALIGN(inst->dst_fmt.height, 32);
-
-		for (i = 0; i < non_linear_num; i++) {
-			u32 luma_size = fb_stride * fb_height;
-			u32 chroma_size = ALIGN(fb_stride / 2, 16) * fb_height;
-
-			inst->frame_vbuf[i].size = luma_size + chroma_size;
-			ret = wave5_vdi_allocate_dma_memory(inst->dev, &inst->frame_vbuf[i]);
-			if (ret < 0) {
-				dev_dbg(inst->dev->dev, "%s: failed to allocate FBC buffer %zu\n",
-					__func__, inst->frame_vbuf[i].size);
-				goto free_buffers;
-			}
-
-			inst->frame_buf[i].buf_y = inst->frame_vbuf[i].daddr;
-			inst->frame_buf[i].buf_cb = (dma_addr_t)-1;
-			inst->frame_buf[i].buf_cr = (dma_addr_t)-1;
-			inst->frame_buf[i].update_fb_info = true;
-			inst->frame_buf[i].size = inst->frame_vbuf[i].size;
-		}
-
-		ret = wave5_vpu_enc_register_frame_buffer(inst, non_linear_num, fb_stride,
-							  fb_height, COMPRESSED_FRAME_MAP);
-		if (ret) {
-			dev_dbg(inst->dev->dev,
-				"%s: wave5_vpu_enc_register_frame_buffer, fail: %d\n",
-				__func__, ret);
-			goto free_buffers;
-		}
-
-		inst->state = VPU_INST_STATE_PIC_RUN;
+		switch_state(inst, VPU_INST_STATE_OPEN);
 	}
+	if (inst->state == VPU_INST_STATE_OPEN && m2m_ctx->cap_q_ctx.q.streaming) {
+		ret = initialize_sequence(inst);
+		if (ret) {
+			dev_warn(inst->dev->dev, "Sequence not found: %d\n", ret);
+			return ret;
+		}
+		switch_state(inst, VPU_INST_STATE_INIT_SEQ);
+		/*
+		 * The sequence must be analyzed first to calculate the proper
+		 * size of the auxiliary buffers.
+		 */
+		ret = prepare_fb(inst);
+		if (ret) {
+			dev_warn(inst->dev->dev, "Framebuffer preparation, fail: %d\n", ret);
+			return ret;
+		}
 
-	if (inst->state == VPU_INST_STATE_INIT_SEQ &&
-	    q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		*num_buffers = inst->src_buf_count;
-		dev_dbg(inst->dev->dev, "%s: src buf num: %u", __func__, *num_buffers);
+		switch_state(inst, VPU_INST_STATE_PIC_RUN);
 	}
 
 	return 0;
-
-free_buffers:
-	for (i = 0; i < inst->fbc_buf_count; i++)
-		wave5_vdi_free_dma_memory(inst->dev, &inst->frame_vbuf[i]);
-	return ret;
 }
 
-static void wave5_vpu_enc_buf_queue(struct vb2_buffer *vb)
+static void streamoff_output(struct vpu_instance *inst, struct vb2_queue *q)
 {
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
-	struct vpu_instance *inst = vb2_get_drv_priv(vb->vb2_queue);
-	struct vpu_buffer *vpu_buf = wave5_to_vpu_buf(vbuf);
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
+	struct vb2_v4l2_buffer *buf;
 
-	dev_dbg(inst->dev->dev, "%s: type: %4u index: %4u size: ([0]=%4lu, [1]=%4lu, [2]=%4lu)\n",
-		__func__, vb->type, vb->index, vb2_plane_size(&vbuf->vb2_buf, 0),
-		vb2_plane_size(&vbuf->vb2_buf, 1), vb2_plane_size(&vbuf->vb2_buf, 2));
+	while ((buf = v4l2_m2m_src_buf_remove(m2m_ctx))) {
+		dev_dbg(inst->dev->dev, "%s: buf type %4u | index %4u\n",
+			__func__, buf->vb2_buf.type, buf->vb2_buf.index);
+		v4l2_m2m_buf_done(buf, VB2_BUF_STATE_ERROR);
+	}
+}
 
-	if (vb->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		vbuf->sequence = inst->queued_src_buf_num++;
-		list_add_tail(&vpu_buf->list, &inst->avail_src_bufs);
-	} else {
-		vbuf->sequence = inst->queued_dst_buf_num++;
-		list_add_tail(&vpu_buf->list, &inst->avail_dst_bufs);
+static void streamoff_capture(struct vpu_instance *inst, struct vb2_queue *q)
+{
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
+	struct vb2_v4l2_buffer *buf;
+
+	while ((buf = v4l2_m2m_dst_buf_remove(m2m_ctx))) {
+		dev_dbg(inst->dev->dev, "%s: buf type %4u | index %4u\n",
+			__func__, buf->vb2_buf.type, buf->vb2_buf.index);
+		vb2_set_plane_payload(&buf->vb2_buf, 0, 0);
+		v4l2_m2m_buf_done(buf, VB2_BUF_STATE_ERROR);
 	}
 
-	vpu_buf->consumed = FALSE;
-	v4l2_m2m_buf_queue(inst->v4l2_fh.m2m_ctx, vbuf);
-
-	if (vb2_start_streaming_called(vb->vb2_queue)) {
-		if (inst->state != VPU_INST_STATE_STOP) {
-			if ((!list_empty_careful(&inst->avail_src_bufs)) &&
-			    (!list_empty_careful(&inst->avail_dst_bufs)))
-				inst->ops->start_process(inst);
-		} else {
-			if (!inst->eos)
-				inst->ops->start_process(inst);
-		}
-	}
+	v4l2_m2m_clear_state(m2m_ctx);
 }
 
 static void wave5_vpu_enc_stop_streaming(struct vb2_queue *q)
 {
 	struct vpu_instance *inst = vb2_get_drv_priv(q);
-	struct vpu_buffer *vbuf, *n;
-	struct vb2_v4l2_buffer *buf;
 	bool check_cmd = true;
+
+	/*
+	 * Note that we don't need m2m_ctx->next_buf_last for this driver, so we
+	 * don't call v4l2_m2m_update_stop_streaming_state().
+	 */
 
 	dev_dbg(inst->dev->dev, "%s: type: %u\n", __func__, q->type);
 
 	if (wave5_vpu_both_queues_are_streaming(inst))
-		inst->state = VPU_INST_STATE_STOP;
+		switch_state(inst, VPU_INST_STATE_STOP);
 
 	while (check_cmd) {
 		struct queue_status_info q_status;
@@ -1346,7 +1439,7 @@ static void wave5_vpu_enc_stop_streaming(struct vb2_queue *q)
 
 		wave5_vpu_enc_give_command(inst, ENC_GET_QUEUE_STATUS, &q_status);
 
-		if (q_status.instance_queue_count + q_status.report_queue_count == 0)
+		if (q_status.report_queue_count == 0)
 			break;
 
 		if (wave5_vpu_wait_interrupt(inst, VPU_ENC_TIMEOUT) < 0)
@@ -1356,26 +1449,10 @@ static void wave5_vpu_enc_stop_streaming(struct vb2_queue *q)
 			dev_dbg(inst->dev->dev, "Getting encoding results from fw, fail\n");
 	}
 
-	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		while ((buf = v4l2_m2m_src_buf_remove(inst->v4l2_fh.m2m_ctx))) {
-			dev_dbg(inst->dev->dev, "%s: buf type %4u | index %4u\n",
-				__func__, buf->vb2_buf.type, buf->vb2_buf.index);
-			v4l2_m2m_buf_done(buf, VB2_BUF_STATE_ERROR);
-		}
-
-		list_for_each_entry_safe(vbuf, n, &inst->avail_src_bufs, list)
-			list_del_init(&vbuf->list);
-	} else {
-		while ((buf = v4l2_m2m_dst_buf_remove(inst->v4l2_fh.m2m_ctx))) {
-			dev_dbg(inst->dev->dev, "%s: buf type %4u | index %4u\n",
-				__func__, buf->vb2_buf.type, buf->vb2_buf.index);
-			vb2_set_plane_payload(&buf->vb2_buf, 0, 0);
-			v4l2_m2m_buf_done(buf, VB2_BUF_STATE_ERROR);
-		}
-
-		list_for_each_entry_safe(vbuf, n, &inst->avail_dst_bufs, list)
-			list_del_init(&vbuf->list);
-	}
+	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
+		streamoff_output(inst, q);
+	else
+		streamoff_capture(inst, q);
 }
 
 static const struct vb2_ops wave5_vpu_enc_vb2_ops = {
@@ -1383,6 +1460,7 @@ static const struct vb2_ops wave5_vpu_enc_vb2_ops = {
 	.wait_prepare = vb2_ops_wait_prepare,
 	.wait_finish = vb2_ops_wait_finish,
 	.buf_queue = wave5_vpu_enc_buf_queue,
+	.start_streaming = wave5_vpu_enc_start_streaming,
 	.stop_streaming = wave5_vpu_enc_stop_streaming,
 };
 
@@ -1411,39 +1489,68 @@ static int wave5_vpu_enc_queue_init(void *priv, struct vb2_queue *src_vq, struct
 }
 
 static const struct vpu_instance_ops wave5_vpu_enc_inst_ops = {
-	.start_process = wave5_vpu_enc_start_encode,
-	.stop_process = wave5_vpu_enc_stop_encode,
 	.finish_process = wave5_vpu_enc_finish_encode,
 };
 
 static void wave5_vpu_enc_device_run(void *priv)
 {
 	struct vpu_instance *inst = priv;
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
+	u32 fail_res = 0;
+	int ret = 0;
 
-	inst->ops->start_process(inst);
+	switch (inst->state) {
+	case VPU_INST_STATE_PIC_RUN:
+		ret = start_encode(inst, &fail_res);
+		if (ret) {
+			if (ret == -EINVAL)
+				dev_err(inst->dev->dev,
+					"Frame encoding on m2m context (%p), fail: %d (res: %d)\n",
+					m2m_ctx, ret, fail_res);
+			else if (ret == -EAGAIN)
+				dev_dbg(inst->dev->dev, "Missing buffers for encode, try again\n");
+			break;
+		}
+		dev_dbg(inst->dev->dev, "%s: leave with active job", __func__);
+		return;
+	default:
+		WARN(1, "Execution of a job in state %s is invalid.\n",
+		     state_to_str(inst->state));
+		break;
+	}
+	dev_dbg(inst->dev->dev, "%s: leave and finish job", __func__);
+	v4l2_m2m_job_finish(inst->v4l2_m2m_dev, m2m_ctx);
 }
 
 static int wave5_vpu_enc_job_ready(void *priv)
 {
 	struct vpu_instance *inst = priv;
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
 
-	if (inst->state == VPU_INST_STATE_STOP)
-		return 0;
-
-	return 1;
-}
-
-static void wave5_vpu_enc_job_abort(void *priv)
-{
-	struct vpu_instance *inst = priv;
-
-	inst->ops->stop_process(inst);
+	switch (inst->state) {
+	case VPU_INST_STATE_NONE:
+		dev_dbg(inst->dev->dev, "Encoder must be open to start queueing M2M jobs!\n");
+		return false;
+	case VPU_INST_STATE_PIC_RUN:
+		if (m2m_ctx->is_draining || v4l2_m2m_num_src_bufs_ready(m2m_ctx)) {
+			dev_dbg(inst->dev->dev, "Encoder ready for a job, state: %s\n",
+				state_to_str(inst->state));
+			return true;
+		}
+		fallthrough;
+	default:
+		dev_dbg(inst->dev->dev,
+			"Encoder not ready for a job, state: %s, %s draining, %d src bufs ready\n",
+			state_to_str(inst->state), m2m_ctx->is_draining ? "is" : "is not",
+			v4l2_m2m_num_src_bufs_ready(m2m_ctx));
+		break;
+	}
+	return false;
 }
 
 static const struct v4l2_m2m_ops wave5_vpu_enc_m2m_ops = {
 	.device_run = wave5_vpu_enc_device_run,
 	.job_ready = wave5_vpu_enc_job_ready,
-	.job_abort = wave5_vpu_enc_job_abort,
 };
 
 static int wave5_vpu_open_enc(struct file *filp)
@@ -1463,28 +1570,25 @@ static int wave5_vpu_open_enc(struct file *filp)
 	inst->type = VPU_INST_TYPE_ENC;
 	inst->ops = &wave5_vpu_enc_inst_ops;
 
+	inst->codec_info = kzalloc(sizeof(*inst->codec_info), GFP_KERNEL);
+	if (!inst->codec_info)
+		return -ENOMEM;
+
 	v4l2_fh_init(&inst->v4l2_fh, vdev);
 	filp->private_data = &inst->v4l2_fh;
 	v4l2_fh_add(&inst->v4l2_fh);
 
 	INIT_LIST_HEAD(&inst->list);
+	list_add_tail(&inst->list, &dev->instances);
 
-	INIT_LIST_HEAD(&inst->avail_src_bufs);
-	INIT_LIST_HEAD(&inst->avail_dst_bufs);
-
-	inst->v4l2_m2m_dev = v4l2_m2m_init(&wave5_vpu_enc_m2m_ops);
-	if (IS_ERR(inst->v4l2_m2m_dev)) {
-		ret = PTR_ERR(inst->v4l2_m2m_dev);
-		dev_err(inst->dev->dev, "v4l2_m2m_init, fail: %d\n", ret);
-		goto cleanup_inst;
-	}
-
+	inst->v4l2_m2m_dev = inst->dev->v4l2_m2m_enc_dev;
 	inst->v4l2_fh.m2m_ctx =
 		v4l2_m2m_ctx_init(inst->v4l2_m2m_dev, inst, wave5_vpu_enc_queue_init);
 	if (IS_ERR(inst->v4l2_fh.m2m_ctx)) {
 		ret = PTR_ERR(inst->v4l2_fh.m2m_ctx);
 		goto cleanup_inst;
 	}
+	v4l2_m2m_set_src_buffered(inst->v4l2_fh.m2m_ctx, true);
 
 	v4l2_ctrl_handler_init(v4l2_ctrl_hdl, 50);
 	v4l2_ctrl_new_std_menu(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
@@ -1583,7 +1687,9 @@ static int wave5_vpu_open_enc(struct file *filp)
 			       V4L2_CID_MPEG_VIDEO_H264_ENTROPY_MODE,
 			       V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CABAC, 0,
 			       V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CAVLC);
-
+	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
+			  V4L2_CID_MPEG_VIDEO_AU_DELIMITER,
+			  0, 1, 1, 1);
 	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
 			  V4L2_CID_HFLIP,
 			  0, 1, 1, 0);
@@ -1652,17 +1758,6 @@ static int wave5_vpu_open_enc(struct file *filp)
 		goto cleanup_inst;
 	}
 
-	ret = mutex_lock_interruptible(&dev->dev_lock);
-	if (ret)
-		goto cleanup_inst;
-
-	if (dev->irq < 0 && !hrtimer_active(&dev->hrtimer) && list_empty(&dev->instances))
-		hrtimer_start(&dev->hrtimer, ns_to_ktime(dev->vpu_poll_interval * NSEC_PER_MSEC),
-			      HRTIMER_MODE_REL_PINNED);
-
-	list_add_tail(&inst->list, &dev->instances);
-
-	mutex_unlock(&dev->dev_lock);
 	wave5_vdi_allocate_sram(inst->dev);
 
 	return 0;
@@ -1695,6 +1790,13 @@ int wave5_vpu_enc_register_device(struct vpu_device *dev)
 	if (!vdev_enc)
 		return -ENOMEM;
 
+	dev->v4l2_m2m_enc_dev = v4l2_m2m_init(&wave5_vpu_enc_m2m_ops);
+	if (IS_ERR(dev->v4l2_m2m_enc_dev)) {
+		ret = PTR_ERR(dev->v4l2_m2m_enc_dev);
+		dev_err(dev->dev, "v4l2_m2m_init, fail: %d\n", ret);
+		return -EINVAL;
+	}
+
 	dev->video_dev_enc = vdev_enc;
 
 	strscpy(vdev_enc->name, VPU_ENC_DEV_NAME, sizeof(vdev_enc->name));
@@ -1718,4 +1820,6 @@ int wave5_vpu_enc_register_device(struct vpu_device *dev)
 void wave5_vpu_enc_unregister_device(struct vpu_device *dev)
 {
 	video_unregister_device(dev->video_dev_enc);
+	if (dev->v4l2_m2m_enc_dev)
+		v4l2_m2m_release(dev->v4l2_m2m_enc_dev);
 }

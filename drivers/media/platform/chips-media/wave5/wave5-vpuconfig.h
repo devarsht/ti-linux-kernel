@@ -39,12 +39,6 @@
 #define VPU_ENC_TIMEOUT                 60000
 #define VPU_DEC_TIMEOUT                 60000
 
-#define HOST_ENDIAN                     VDI_128BIT_LITTLE_ENDIAN
-#define VPU_FRAME_ENDIAN                HOST_ENDIAN
-#define VPU_STREAM_ENDIAN               HOST_ENDIAN
-#define VPU_USER_DATA_ENDIAN            HOST_ENDIAN
-#define VPU_SOURCE_ENDIAN               HOST_ENDIAN
-
 // for WAVE encoder
 #define USE_SRC_PRP_AXI         0
 #define USE_SRC_PRI_AXI         1
@@ -79,12 +73,5 @@
 #define WAVE5_FBC_C_AXI_ID          0x0
 #define WAVE5_SEC_AXI_ID            0x0
 #define WAVE5_PRI_AXI_ID            0x0
-
-#define WAVE5_PROC_AXI_AXPROT       0x0
-#define WAVE5_PROC_AXI_AXCACHE      0x0
-#define WAVE5_PROC_AXI_EXT_ADDR     0x0
-#define WAVE5_SEC_AXI_AXPROT        0x0
-#define WAVE5_SEC_AXI_AXCACHE       0x0
-#define WAVE5_SEC_AXI_EXT_ADDR      0x0
 
 #endif  /* _VPU_CONFIG_H_ */

@@ -176,7 +176,8 @@ enum vxd_cb_type {
  * @type: the type of message
  * @buf_map_id: the buf_map_id of the resource being returned
  */
-typedef void (*vxd_cb)(void *ctx, enum vxd_cb_type type, unsigned int buf_map_id);
+typedef void (*vxd_cb)(void *ctx, enum vxd_cb_type type, unsigned int buf_map_id,
+						unsigned int error_code);
 
 /*
  * struct vxd_return - contains information about items returning from core
@@ -431,6 +432,8 @@ struct vxd_dec_ctx {
 	unsigned char flag_last;
 	unsigned char num_decoding;
 	unsigned int max_num_ref_frames;
+	unsigned int cap_seq; /* sequence number for capture port */
+	unsigned int out_seq; /* sequence number for output port */
 	struct vdec_str_opconfig str_opcfg;
 	struct vdec_pict_bufconfig pict_bufcfg;
 	void *bspp_context;
@@ -440,6 +443,7 @@ struct vxd_dec_ctx {
 	struct bspp_ddbuf_array_info fw_pps[MAX_PPSS];
 	decode_cb cb;
 	struct mutex *mutex; /* Per stream mutex */
+	struct mutex *mutex2; /* used as a sequencing mutex, so device_run runs to completion */
 
 	/* The below variable used only in Rtos */
 	void *mm_return_resource; /* Place holder for CB to application */

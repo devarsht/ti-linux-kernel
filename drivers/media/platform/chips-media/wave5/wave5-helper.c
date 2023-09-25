@@ -11,6 +11,9 @@ void wave5_cleanup_instance(struct vpu_instance *inst)
 {
 	int i;
 
+	if (list_is_singular(&inst->list))
+		wave5_vdi_free_sram(inst->dev);
+
 	for (i = 0; i < inst->dst_buf_count; i++)
 		wave5_vdi_free_dma_memory(inst->dev, &inst->frame_vbuf[i]);
 
@@ -25,6 +28,9 @@ void wave5_cleanup_instance(struct vpu_instance *inst)
 	list_del_init(&inst->list);
 	kfifo_free(&inst->irq_status);
 	ida_free(&inst->dev->inst_ida, inst->id);
+	kfree(inst->map_index);
+	kfree(inst->mapped_dma_addr);
+	kfree(inst->inst_lock);
 	kfree(inst);
 }
 
@@ -33,12 +39,13 @@ int wave5_vpu_release_device(struct file *filp,
 			     char *name)
 {
 	struct vpu_instance *inst = wave5_to_vpu_inst(filp->private_data);
+	struct vpu_device *dev = inst->dev;
+	int ret = 0;
 
 	v4l2_m2m_ctx_release(inst->v4l2_fh.m2m_ctx);
 	if (inst->state != VPU_INST_STATE_NONE) {
 		u32 fail_res;
 		int retry_count = 10;
-		int ret;
 
 		do {
 			fail_res = 0;
@@ -63,8 +70,20 @@ int wave5_vpu_release_device(struct file *filp,
 	}
 
 	wave5_cleanup_instance(inst);
+	if (dev->irq < 0) {
+		ret = mutex_lock_interruptible(&dev->dev_lock);
+		if (ret)
+			return ret;
 
-	return 0;
+		if (list_empty(&dev->instances)) {
+			dev_dbg(dev->dev, "Disabling the hrtimer\n");
+			hrtimer_cancel(&dev->hrtimer);
+		}
+
+		mutex_unlock(&dev->dev_lock);
+	}
+
+	return ret;
 }
 
 int wave5_vpu_queue_init(void *priv, struct vb2_queue *src_vq, struct vb2_queue *dst_vq,

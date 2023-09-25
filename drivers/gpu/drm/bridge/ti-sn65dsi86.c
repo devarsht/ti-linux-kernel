@@ -153,6 +153,7 @@
  * @ln_polrs:     Value for the 4-bit LN_POLRS field of SN_ENH_FRAME_REG.
  * @comms_enabled: If true then communication over the aux channel is enabled.
  * @comms_mutex:   Protects modification of comms_enabled.
+ * @plugged:       Panel is plugged.
  *
  * @gchip:        If we expose our GPIOs, this is used.
  * @gchip_output: A cache of whether we've set GPIOs to output.  This
@@ -179,7 +180,7 @@ struct ti_sn65dsi86 {
 	struct regmap			*regmap;
 	struct drm_dp_aux		aux;
 	struct drm_bridge		bridge;
-	struct drm_connector		*connector;
+	struct drm_connector		connector;
 	struct device_node		*host_node;
 	struct mipi_dsi_device		*dsi;
 	struct clk			*refclk;
@@ -191,6 +192,7 @@ struct ti_sn65dsi86 {
 	u8				ln_polrs;
 	bool				comms_enabled;
 	struct mutex			comms_mutex;
+	bool				plugged;
 
 #if defined(CONFIG_OF_GPIO)
 	struct gpio_chip		gchip;
@@ -273,6 +275,52 @@ static const u32 ti_sn_bridge_dsiclk_lut[] = {
 	416000000,
 	486000000,
 	460800000,
+};
+
+static struct ti_sn65dsi86 *
+connector_to_ti_sn_bridge(struct drm_connector *connector)
+{
+	return container_of(connector, struct ti_sn65dsi86, connector);
+}
+
+static enum drm_connector_status
+ti_sn_bridge_connector_detect(struct drm_connector *connector, bool force)
+{
+	struct ti_sn65dsi86 *pdata = connector_to_ti_sn_bridge(connector);
+
+	return pdata->plugged ? connector_status_connected
+			      : connector_status_disconnected;
+}
+
+static const struct drm_connector_funcs ti_sn_bridge_connector_funcs = {
+	.detect = ti_sn_bridge_connector_detect,
+	.fill_modes = drm_helper_probe_single_connector_modes,
+	.destroy = drm_connector_cleanup,
+	.reset = drm_atomic_helper_connector_reset,
+	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
+};
+
+static int ti_sn_bridge_connector_get_modes(struct drm_connector *connector)
+{
+	struct ti_sn65dsi86 *pdata = connector_to_ti_sn_bridge(connector);
+
+	return drm_bridge_get_modes(pdata->next_bridge, connector);
+}
+
+static enum drm_mode_status
+ti_sn_bridge_connector_mode_valid(struct drm_connector *connector,
+				  struct drm_display_mode *mode)
+{
+	if (mode->clock > 594000)
+		return MODE_CLOCK_HIGH;
+
+	return MODE_OK;
+}
+
+static const struct drm_connector_helper_funcs ti_sn_bridge_connector_helper_funcs = {
+	.get_modes = ti_sn_bridge_connector_get_modes,
+	.mode_valid = ti_sn_bridge_connector_mode_valid,
 };
 
 static void ti_sn_bridge_set_refclk_freq(struct ti_sn65dsi86 *pdata)
@@ -363,7 +411,7 @@ static int __maybe_unused ti_sn65dsi86_resume(struct device *dev)
 	/* td2: min 100 us after regulators before enabling the GPIO */
 	usleep_range(100, 110);
 
-	gpiod_set_value(pdata->enable_gpio, 1);
+	gpiod_set_value_cansleep(pdata->enable_gpio, 1);
 
 	/*
 	 * If we have a reference clock we can enable communication w/ the
@@ -386,7 +434,7 @@ static int __maybe_unused ti_sn65dsi86_suspend(struct device *dev)
 	if (pdata->refclk)
 		ti_sn65dsi86_disable_comms(pdata);
 
-	gpiod_set_value(pdata->enable_gpio, 0);
+	gpiod_set_value_cansleep(pdata->enable_gpio, 0);
 
 	ret = regulator_bulk_disable(SN_REGULATOR_SUPPLY_NUM, pdata->supplies);
 	if (ret)
@@ -679,10 +727,11 @@ static int ti_sn_attach_host(struct ti_sn65dsi86 *pdata)
 	if (IS_ERR(dsi))
 		return PTR_ERR(dsi);
 
-	/* TODO: setting to 4 MIPI lanes always for now */
-	dsi->lanes = 4;
+	/* TODO: setting to 2 MIPI lanes always for now */
+	dsi->lanes = 2;
 	dsi->format = MIPI_DSI_FMT_RGB888;
-	dsi->mode_flags = MIPI_DSI_MODE_VIDEO;
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO |
+		MIPI_DSI_MODE_NO_EOT_PACKET | MIPI_DSI_MODE_VIDEO_SYNC_PULSE;
 
 	/* check if continuous dsi clock is required or not */
 	pm_runtime_get_sync(dev);
@@ -701,6 +750,7 @@ static int ti_sn_bridge_attach(struct drm_bridge *bridge,
 {
 	struct ti_sn65dsi86 *pdata = bridge_to_ti_sn65dsi86(bridge);
 	int ret;
+	u8 link_status[DP_LINK_STATUS_SIZE];
 
 	pdata->aux.drm_dev = bridge->dev;
 	ret = drm_dp_aux_register(&pdata->aux);
@@ -721,14 +771,25 @@ static int ti_sn_bridge_attach(struct drm_bridge *bridge,
 	if (flags & DRM_BRIDGE_ATTACH_NO_CONNECTOR)
 		return 0;
 
-	pdata->connector = drm_bridge_connector_init(pdata->bridge.dev,
-						     pdata->bridge.encoder);
-	if (IS_ERR(pdata->connector)) {
-		ret = PTR_ERR(pdata->connector);
-		goto err_initted_aux;
+	ret = drm_connector_init(bridge->dev, &pdata->connector,
+				 &ti_sn_bridge_connector_funcs,
+				 DRM_MODE_CONNECTOR_eDP);
+	if (ret) {
+		DRM_ERROR("Connector initialization failed\n");
+		return ret;
 	}
 
-	drm_connector_attach_encoder(pdata->connector, pdata->bridge.encoder);
+	drm_connector_helper_add(&pdata->connector,
+				 &ti_sn_bridge_connector_helper_funcs);
+
+	drm_connector_attach_encoder(&pdata->connector, pdata->bridge.encoder);
+
+	ret = drm_dp_dpcd_read_link_status(&pdata->aux, link_status);
+
+	if (ret < 0)
+		pdata->plugged = false;
+	else
+		pdata->plugged = true;
 
 	return 0;
 
@@ -1057,6 +1118,15 @@ static void ti_sn_bridge_atomic_enable(struct drm_bridge *bridge,
 		return;
 	}
 
+	/*
+	 * Disable ASSR Display Authentication, since its supported only in eDP
+	 * and not spupperted in DP
+	 */
+	regmap_write(pdata->regmap, 0xFF, 0x7);
+	regmap_write(pdata->regmap, 0x16, 0x1);
+	regmap_write(pdata->regmap, 0xFF, 0x0);
+	regmap_update_bits(pdata->regmap, 0x5A, BIT(0), 0);
+
 	max_dp_lanes = ti_sn_get_max_lanes(pdata);
 	pdata->dp_lanes = min(pdata->dp_lanes, max_dp_lanes);
 
@@ -1071,26 +1141,6 @@ static void ti_sn_bridge_atomic_enable(struct drm_bridge *bridge,
 
 	/* set dsi clk frequency value */
 	ti_sn_bridge_set_dsi_rate(pdata);
-
-	/*
-	 * The SN65DSI86 only supports ASSR Display Authentication method and
-	 * this method is enabled for eDP panels. An eDP panel must support this
-	 * authentication method. We need to enable this method in the eDP panel
-	 * at DisplayPort address 0x0010A prior to link training.
-	 *
-	 * As only ASSR is supported by SN65DSI86, for full DisplayPort displays
-	 * we need to disable the scrambler.
-	 */
-	if (pdata->bridge.type == DRM_MODE_CONNECTOR_eDP) {
-		drm_dp_dpcd_writeb(&pdata->aux, DP_EDP_CONFIGURATION_SET,
-				   DP_ALTERNATE_SCRAMBLER_RESET_ENABLE);
-
-		regmap_update_bits(pdata->regmap, SN_TRAINING_SETTING_REG,
-				   SCRAMBLE_DISABLE, 0);
-	} else {
-		regmap_update_bits(pdata->regmap, SN_TRAINING_SETTING_REG,
-				   SCRAMBLE_DISABLE, SCRAMBLE_DISABLE);
-	}
 
 	bpp = ti_sn_bridge_get_bpp(connector);
 	/* Set the DP output format (18 bpp or 24 bpp) */

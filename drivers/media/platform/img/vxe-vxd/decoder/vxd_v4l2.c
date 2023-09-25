@@ -410,7 +410,7 @@ static struct vxd_dec_q_data *get_q_data(struct vxd_dec_ctx *ctx,
 }
 
 static void vxd_return_resource(void *ctx_handle, enum vxd_cb_type type,
-				unsigned int buf_map_id)
+				unsigned int buf_map_id, unsigned int err_flags)
 {
 	struct vxd_return *res;
 	struct vxd_buffer *buf = NULL;
@@ -432,6 +432,7 @@ static void vxd_return_resource(void *ctx_handle, enum vxd_cb_type type,
 			break;
 		}
 		buf->buffer.vb.field = V4L2_FIELD_NONE;
+
 		q_data = get_q_data(ctx, buf->buffer.vb.vb2_buf.vb2_queue->type);
 		if (!q_data)
 			return;
@@ -458,6 +459,8 @@ static void vxd_return_resource(void *ctx_handle, enum vxd_cb_type type,
 		if (!res->work)
 			return;
 
+		/* this is done because the v4l2 spec says can't call m2m_done from */
+		/* device_run,  this callback could come from device_run */
 		schedule_work(res->work);
 
 		break;
@@ -470,6 +473,7 @@ static void vxd_return_resource(void *ctx_handle, enum vxd_cb_type type,
 		}
 		buf->mapping->reuse = FALSE;
 		buf->buffer.vb.field = V4L2_FIELD_NONE;
+
 		q_data = get_q_data(ctx, buf->buffer.vb.vb2_buf.vb2_queue->type);
 		if (!q_data)
 			return;
@@ -478,7 +482,16 @@ static void vxd_return_resource(void *ctx_handle, enum vxd_cb_type type,
 			vb2_set_plane_payload(&buf->buffer.vb.vb2_buf, i,
 					      ctx->pict_bufcfg.plane_size[i]);
 
-		v4l2_m2m_buf_done(&buf->buffer.vb, VB2_BUF_STATE_DONE);
+		/*
+		 * for fatal errors we will use the FATAL callback
+		 * however this will signal to v4l2 that this frame
+		 * has a (potentially concealled) error
+		 */
+		if (err_flags)
+			v4l2_m2m_buf_done(&buf->buffer.vb, VB2_BUF_STATE_ERROR);
+		else
+			v4l2_m2m_buf_done(&buf->buffer.vb, VB2_BUF_STATE_DONE);
+
 		break;
 	case VXD_CB_PICT_RELEASE:
 		buf = find_buffer(buf_map_id, &ctx->reuse_queue);
@@ -541,10 +554,11 @@ static void vxd_return_resource(void *ctx_handle, enum vxd_cb_type type,
 			if (!q_data)
 				break;
 
+			// terminal error, set planes to zero size and tell v4l2 layer
 			for (i = 0; i < q_data->fmt->num_planes; i++)
 				vb2_set_plane_payload(&vb->vb2_buf, i, 0);
 
-			v4l2_m2m_buf_done(vb, VB2_BUF_STATE_DONE);
+			v4l2_m2m_buf_done(vb, VB2_BUF_STATE_ERROR);
 		} else {
 			ctx->flag_last = TRUE;
 		}
@@ -822,8 +836,10 @@ static void vxd_dec_buf_queue(struct vb2_buffer *vb)
 	int i;
 
 	if (V4L2_TYPE_IS_OUTPUT(vb->type)) {
+		vbuf->sequence = ctx->out_seq++;
 		v4l2_m2m_buf_queue(ctx->fh.m2m_ctx, vbuf);
 	} else {
+		vbuf->sequence = ctx->cap_seq++;
 		mutex_lock_nested(ctx->mutex, SUBCLASS_VXD_V4L2);
 		if (buf->mapping->reuse) {
 			mutex_unlock(ctx->mutex);
@@ -1090,6 +1106,13 @@ static int vxd_dec_open(struct file *file)
 	}
 	mutex_init(ctx->mutex);
 
+	ctx->mutex2 = kzalloc(sizeof(*ctx->mutex), GFP_KERNEL);
+	if (!ctx->mutex2) {
+		ret = -ENOMEM;
+		goto out_idr_remove;
+	}
+	mutex_init(ctx->mutex2);
+
 	INIT_LIST_HEAD(&ctx->items_done);
 	INIT_LIST_HEAD(&ctx->reuse_queue);
 	INIT_LIST_HEAD(&ctx->return_queue);
@@ -1215,7 +1238,6 @@ static int __enum_fmt(struct v4l2_fmtdesc *f, unsigned int type)
 {
 	int i, index;
 	struct vxd_dec_fmt *fmt = NULL;
-
 	index = 0;
 	for (i = 0; i < ARRAY_SIZE(vxd_dec_formats); ++i) {
 		if (vxd_dec_formats[i].type & type) {
@@ -1245,7 +1267,6 @@ static int vxd_dec_enum_fmt(struct file *file, void *priv, struct v4l2_fmtdesc *
 static struct vxd_dec_fmt *find_format(struct v4l2_format *f, unsigned int type)
 {
 	int i;
-
 	for (i = 0; i < ARRAY_SIZE(vxd_dec_formats); ++i) {
 		if (vxd_dec_formats[i].fourcc == f->fmt.pix_mp.pixelformat &&
 		    vxd_dec_formats[i].type == type)
@@ -1660,7 +1681,7 @@ static int vxd_dec_cmd(struct file *file, void *fh, struct v4l2_decoder_cmd *cmd
 #ifdef DEBUG_DECODER_DRIVER
 			pr_info("All buffers are decoded, so issue dummy stream end\n");
 #endif
-			vxd_return_resource((void *)ctx, VXD_CB_STR_END, 0);
+			vxd_return_resource((void *)ctx, VXD_CB_STR_END, 0, 0);
 		}
 	}
 
@@ -1767,16 +1788,28 @@ static void device_run(void *priv)
 	static int cnt;
 	int i;
 
+	mutex_lock(ctx->mutex2);
 	mutex_lock_nested(ctx->mutex, SUBCLASS_VXD_V4L2);
 	ctx->num_decoding++;
 
 	src_vb = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
-	if (!src_vb)
+	if (!src_vb) {
 		dev_err(dev, "Next src buffer is null\n");
+		mutex_unlock(ctx->mutex);
+		mutex_unlock(ctx->mutex2);
+		return;
+	}
 
 	dst_vb = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
-	if (!dst_vb)
+	if (!dst_vb) {
 		dev_err(dev, "Next dst buffer is null\n");
+		mutex_unlock(ctx->mutex);
+		mutex_unlock(ctx->mutex2);
+		return;
+	}
+
+
+	dst_vb->vb2_buf.timestamp = src_vb->vb2_buf.timestamp;
 
 	src_vxdb = container_of(src_vb, struct vxd_buffer, buffer.vb);
 	dst_vxdb = container_of(dst_vb, struct vxd_buffer, buffer.vb);
@@ -1794,7 +1827,7 @@ static void device_run(void *priv)
 		dev_err(dev, "bspp_stream_submit_buffer failed %d\n", ret);
 
 	if (ctx->stop_initiated &&
-	    (v4l2_m2m_num_src_bufs_ready(ctx->fh.m2m_ctx) == 0))
+			(v4l2_m2m_num_src_bufs_ready(ctx->fh.m2m_ctx) == 0))
 		ctx->eos = TRUE;
 
 	mutex_unlock(ctx->mutex);
@@ -1890,6 +1923,8 @@ static void device_run(void *priv)
 	src_vxdb->end_unit.decode = FALSE;
 	src_vxdb->end_unit.features = 0;
 	core_stream_submit_unit(ctx->res_str_id, &src_vxdb->end_unit);
+	mutex_unlock(ctx->mutex2);
+
 }
 
 static int job_ready(void *priv)

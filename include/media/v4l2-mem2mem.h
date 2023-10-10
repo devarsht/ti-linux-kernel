@@ -57,16 +57,6 @@ struct v4l2_m2m_dev;
  * @rdy_spinlock: spin lock to protect the struct usage
  * @num_rdy:	number of buffers ready to be processed
  * @buffered:	is the queue buffered?
- * @ignore_streaming: Dictates whether the queue must be streaming for a job to
- *		      be queued.
- *		      This is useful, for example, when the driver requires to
- *		      initialize the sequence with a firmware, where only a
- *		      queued OUTPUT queue buffer and STREAMON on the OUTPUT
- *		      queue is required to perform the anlysis of the bitstream
- *		      header.
- *		      This means the driver is responsible for implementing the
- *		      job_ready callback correctly to make sure that requirements
- *		      for actual decoding are met.
  *
  * Queue for buffers ready to be processed as soon as this
  * instance receives access to the device.
@@ -79,7 +69,6 @@ struct v4l2_m2m_queue_ctx {
 	spinlock_t		rdy_spinlock;
 	u8			num_rdy;
 	bool			buffered;
-	bool			ignore_streaming;
 };
 
 /**
@@ -95,6 +84,12 @@ struct v4l2_m2m_queue_ctx {
  * @last_src_buf: indicate the last source buffer for draining
  * @next_buf_last: next capture queud buffer will be tagged as last
  * @has_stopped: indicate the device has been stopped
+ * @ignore_cap_streaming: If true, job_ready can be called even if the CAPTURE
+ *			  queue is not streaming. This allows firmware to
+ *			  analyze the bitstream header which arrives on the
+ *			  OUTPUT queue. The driver must implement the job_ready
+ *			  callback correctly to make sure that the requirements
+ *			  for actual decoding are met.
  * @m2m_dev: opaque pointer to the internal data to handle M2M context
  * @cap_q_ctx: Capture (output to memory) queue context
  * @out_q_ctx: Output (input from memory) queue context
@@ -117,6 +112,7 @@ struct v4l2_m2m_ctx {
 	struct vb2_v4l2_buffer		*last_src_buf;
 	bool				next_buf_last;
 	bool				has_stopped;
+	bool				ignore_cap_streaming;
 
 	/* internal use only */
 	struct v4l2_m2m_dev		*m2m_dev;
@@ -573,12 +569,6 @@ static inline void v4l2_m2m_set_dst_buffered(struct v4l2_m2m_ctx *m2m_ctx,
 					     bool buffered)
 {
 	m2m_ctx->cap_q_ctx.buffered = buffered;
-}
-
-static inline void v4l2_m2m_set_dst_ignore_streaming(struct v4l2_m2m_ctx *m2m_ctx,
-						     bool ignore_streaming)
-{
-	m2m_ctx->cap_q_ctx.ignore_streaming = ignore_streaming;
 }
 
 /**

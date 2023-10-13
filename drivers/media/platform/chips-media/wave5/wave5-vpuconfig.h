@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - product config definitions
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #ifndef _VPU_CONFIG_H_

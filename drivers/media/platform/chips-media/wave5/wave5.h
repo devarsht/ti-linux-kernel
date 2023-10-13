@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - wave5 backend definitions
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #ifndef __WAVE5_FUNCTION_H__
@@ -51,8 +51,6 @@
 bool wave5_vpu_is_init(struct vpu_device *vpu_dev);
 
 unsigned int wave5_vpu_get_product_id(struct vpu_device *vpu_dev);
-
-void wave5_bit_issue_command(struct vpu_instance *inst, u32 cmd);
 
 int wave5_vpu_get_version(struct vpu_device *vpu_dev, u32 *revision);
 

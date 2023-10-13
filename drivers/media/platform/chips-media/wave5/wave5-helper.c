@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - decoder interface
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #include "wave5-helper.h"
@@ -42,7 +42,6 @@ void wave5_cleanup_instance(struct vpu_instance *inst)
 		v4l2_fh_exit(&inst->v4l2_fh);
 	}
 	list_del_init(&inst->list);
-	kfifo_free(&inst->irq_status);
 	ida_free(&inst->dev->inst_ida, inst->id);
 	kfree(inst->codec_info);
 	kfree(inst);
@@ -151,7 +150,6 @@ int wave5_vpu_g_fmt_out(struct file *file, void *fh, struct v4l2_format *f)
 
 	f->fmt.pix_mp.colorspace = inst->colorspace;
 	f->fmt.pix_mp.ycbcr_enc = inst->ycbcr_enc;
-	f->fmt.pix_mp.hsv_enc = inst->hsv_enc;
 	f->fmt.pix_mp.quantization = inst->quantization;
 	f->fmt.pix_mp.xfer_func = inst->xfer_func;
 
@@ -192,5 +190,24 @@ enum wave_std wave5_to_vpu_std(unsigned int v4l2_pix_fmt, enum vpu_instance_type
 		return type == VPU_INST_TYPE_DEC ? W_HEVC_DEC : W_HEVC_ENC;
 	default:
 		return STD_UNKNOWN;
+	}
+}
+
+void wave5_return_bufs(struct vb2_queue *q, u32 state)
+{
+	struct vpu_instance *inst = vb2_get_drv_priv(q);
+	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
+	struct v4l2_ctrl_handler v4l2_ctrl_hdl = inst->v4l2_ctrl_hdl;
+	struct vb2_v4l2_buffer *vbuf;
+
+	for (;;) {
+		if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
+			vbuf = v4l2_m2m_src_buf_remove(m2m_ctx);
+		else
+			vbuf = v4l2_m2m_dst_buf_remove(m2m_ctx);
+		if (!vbuf)
+			return;
+		v4l2_ctrl_request_complete(vbuf->vb2_buf.req_obj.req, &v4l2_ctrl_hdl);
+		v4l2_m2m_buf_done(vbuf, state);
 	}
 }

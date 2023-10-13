@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - basic types
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #ifndef __WAVE_HELPER_H__
@@ -27,4 +27,5 @@ const struct vpu_format *wave5_find_vpu_fmt(unsigned int v4l2_pix_fmt,
 const struct vpu_format *wave5_find_vpu_fmt_by_idx(unsigned int idx,
 						   const struct vpu_format fmt_list[MAX_FMTS]);
 enum wave_std wave5_to_vpu_std(unsigned int v4l2_pix_fmt, enum vpu_instance_type type);
+void wave5_return_bufs(struct vb2_queue *q, u32 state);
 #endif

@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - basic types
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 #ifndef __VPU_DRV_H__
 #define __VPU_DRV_H__

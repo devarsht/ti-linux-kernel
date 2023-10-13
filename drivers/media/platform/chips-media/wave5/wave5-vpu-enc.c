@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - encoder interface
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #include "wave5-helper.h"
@@ -296,12 +296,10 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 			.type = V4L2_EVENT_EOS
 		};
 
-		if (dst_buf) {
+		if (!WARN_ON(!dst_buf)) {
 			vb2_set_plane_payload(&dst_buf->vb2_buf, 0, 0);
 			dst_buf->field = V4L2_FIELD_NONE;
 			v4l2_m2m_last_buffer_done(m2m_ctx, dst_buf);
-		} else {
-			WARN(1, "A job have been run without destination buffer.\n");
 		}
 
 		v4l2_event_queue_fh(&inst->v4l2_fh, &vpu_event_eos);
@@ -343,7 +341,6 @@ static int wave5_vpu_enc_querycap(struct file *file, void *fh, struct v4l2_capab
 {
 	strscpy(cap->driver, VPU_ENC_DRV_NAME, sizeof(cap->driver));
 	strscpy(cap->card, VPU_ENC_DRV_NAME, sizeof(cap->card));
-	strscpy(cap->bus_info, "platform:" VPU_ENC_DRV_NAME, sizeof(cap->bus_info));
 
 	return 0;
 }
@@ -399,9 +396,6 @@ static int wave5_vpu_enc_try_fmt_cap(struct file *file, void *fh, struct v4l2_fo
 		__func__, f->fmt.pix_mp.pixelformat, f->fmt.pix_mp.width, f->fmt.pix_mp.height,
 		f->fmt.pix_mp.num_planes, f->fmt.pix_mp.field);
 
-	if (f->type != V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
-		return -EINVAL;
-
 	vpu_fmt = wave5_find_vpu_fmt(f->fmt.pix_mp.pixelformat, enc_fmt_list[VPU_FMT_TYPE_CODEC]);
 	if (!vpu_fmt) {
 		f->fmt.pix_mp.pixelformat = inst->dst_fmt.pixelformat;
@@ -420,10 +414,8 @@ static int wave5_vpu_enc_try_fmt_cap(struct file *file, void *fh, struct v4l2_fo
 	f->fmt.pix_mp.field = V4L2_FIELD_NONE;
 	f->fmt.pix_mp.colorspace = inst->colorspace;
 	f->fmt.pix_mp.ycbcr_enc = inst->ycbcr_enc;
-	f->fmt.pix_mp.hsv_enc = inst->hsv_enc;
 	f->fmt.pix_mp.quantization = inst->quantization;
 	f->fmt.pix_mp.xfer_func = inst->xfer_func;
-	memset(&f->fmt.pix_mp.reserved, 0, sizeof(f->fmt.pix_mp.reserved));
 
 	return 0;
 }
@@ -440,6 +432,13 @@ static int wave5_vpu_enc_s_fmt_cap(struct file *file, void *fh, struct v4l2_form
 	ret = wave5_vpu_enc_try_fmt_cap(file, fh, f);
 	if (ret)
 		return ret;
+
+	inst->std = wave5_to_vpu_std(f->fmt.pix_mp.pixelformat, inst->type);
+	if (inst->std == STD_UNKNOWN) {
+		dev_warn(inst->dev->dev, "unsupported pixelformat: %.4s\n",
+			 (char *)&f->fmt.pix_mp.pixelformat);
+		return -EINVAL;
+	}
 
 	inst->dst_fmt.width = f->fmt.pix_mp.width;
 	inst->dst_fmt.height = f->fmt.pix_mp.height;
@@ -473,7 +472,6 @@ static int wave5_vpu_enc_g_fmt_cap(struct file *file, void *fh, struct v4l2_form
 
 	f->fmt.pix_mp.colorspace = inst->colorspace;
 	f->fmt.pix_mp.ycbcr_enc = inst->ycbcr_enc;
-	f->fmt.pix_mp.hsv_enc = inst->hsv_enc;
 	f->fmt.pix_mp.quantization = inst->quantization;
 	f->fmt.pix_mp.xfer_func = inst->xfer_func;
 
@@ -506,9 +504,6 @@ static int wave5_vpu_enc_try_fmt_out(struct file *file, void *fh, struct v4l2_fo
 		__func__, f->fmt.pix_mp.pixelformat, f->fmt.pix_mp.width, f->fmt.pix_mp.height,
 		f->fmt.pix_mp.num_planes, f->fmt.pix_mp.field);
 
-	if (f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
-		return -EINVAL;
-
 	vpu_fmt = wave5_find_vpu_fmt(f->fmt.pix_mp.pixelformat, enc_fmt_list[VPU_FMT_TYPE_RAW]);
 	if (!vpu_fmt) {
 		f->fmt.pix_mp.pixelformat = inst->src_fmt.pixelformat;
@@ -526,7 +521,6 @@ static int wave5_vpu_enc_try_fmt_out(struct file *file, void *fh, struct v4l2_fo
 
 	f->fmt.pix_mp.flags = 0;
 	f->fmt.pix_mp.field = V4L2_FIELD_NONE;
-	memset(&f->fmt.pix_mp.reserved, 0, sizeof(f->fmt.pix_mp.reserved));
 
 	return 0;
 }
@@ -570,7 +564,6 @@ static int wave5_vpu_enc_s_fmt_out(struct file *file, void *fh, struct v4l2_form
 
 	inst->colorspace = f->fmt.pix_mp.colorspace;
 	inst->ycbcr_enc = f->fmt.pix_mp.ycbcr_enc;
-	inst->hsv_enc = f->fmt.pix_mp.hsv_enc;
 	inst->quantization = f->fmt.pix_mp.quantization;
 	inst->xfer_func = f->fmt.pix_mp.xfer_func;
 
@@ -585,27 +578,18 @@ static int wave5_vpu_enc_g_selection(struct file *file, void *fh, struct v4l2_se
 
 	dev_dbg(inst->dev->dev, "%s: type: %u | target: %u\n", __func__, s->type, s->target);
 
-	if (s->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
-		switch (s->target) {
-		case V4L2_SEL_TGT_CROP_DEFAULT:
-		case V4L2_SEL_TGT_CROP_BOUNDS:
-			s->r.left = 0;
-			s->r.top = 0;
-			s->r.width = inst->dst_fmt.width;
-			s->r.height = inst->dst_fmt.height;
-			break;
-		case V4L2_SEL_TGT_CROP:
-			s->r.left = 0;
-			s->r.top = 0;
-			s->r.width = inst->dst_fmt.width;
-			s->r.height = inst->dst_fmt.height;
-			dev_dbg(inst->dev->dev, "%s: V4L2_SEL_TGT_CROP width: %u | height: %u\n",
-				__func__, s->r.width, s->r.height);
-			break;
-		default:
-			return -EINVAL;
-		}
-	} else {
+	if (s->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
+		return -EINVAL;
+	switch (s->target) {
+	case V4L2_SEL_TGT_CROP_DEFAULT:
+	case V4L2_SEL_TGT_CROP_BOUNDS:
+	case V4L2_SEL_TGT_CROP:
+		s->r.left = 0;
+		s->r.top = 0;
+		s->r.width = inst->dst_fmt.width;
+		s->r.height = inst->dst_fmt.height;
+		break;
+	default:
 		return -EINVAL;
 	}
 
@@ -1120,16 +1104,6 @@ static int wave5_vpu_enc_queue_setup(struct vb2_queue *q, unsigned int *num_buff
 
 	dev_dbg(inst->dev->dev, "%s: size: %u\n", __func__, sizes[0]);
 
-	if (inst->state == VPU_INST_STATE_INIT_SEQ &&
-	    q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-		if (*num_buffers > inst->src_buf_count &&
-		    *num_buffers < WAVE5_MAX_FBS)
-			inst->src_buf_count = *num_buffers;
-
-		*num_buffers = inst->src_buf_count;
-		dev_dbg(inst->dev->dev, "%s: src buf num: %u", __func__, *num_buffers);
-	}
-
 	return 0;
 }
 
@@ -1281,7 +1255,6 @@ static int initialize_sequence(struct vpu_instance *inst)
 		v4l2_ctrl_s_ctrl(ctrl, inst->min_src_buf_count);
 
 	inst->fbc_buf_count = initial_info.min_frame_buffer_count;
-	inst->src_buf_count = inst->min_src_buf_count;
 
 	return 0;
 }
@@ -1331,7 +1304,7 @@ static int wave5_vpu_enc_start_streaming(struct vb2_queue *q, unsigned int count
 {
 	struct vpu_instance *inst = vb2_get_drv_priv(q);
 	struct v4l2_m2m_ctx *m2m_ctx = inst->v4l2_fh.m2m_ctx;
-	int ret;
+	int ret = 0;
 
 	v4l2_m2m_update_start_streaming_state(m2m_ctx, q);
 
@@ -1340,20 +1313,13 @@ static int wave5_vpu_enc_start_streaming(struct vb2_queue *q, unsigned int count
 
 		memset(&open_param, 0, sizeof(struct enc_open_param));
 
-		inst->std = wave5_to_vpu_std(inst->dst_fmt.pixelformat, inst->type);
-		if (inst->std == STD_UNKNOWN) {
-			dev_warn(inst->dev->dev, "unsupported pixelformat: %.4s\n",
-				 (char *)&inst->dst_fmt.pixelformat);
-			return -EINVAL;
-		}
-
 		wave5_set_enc_openparam(&open_param, inst);
 
 		ret = wave5_vpu_enc_open(inst, &open_param);
 		if (ret) {
 			dev_dbg(inst->dev->dev, "%s: wave5_vpu_enc_open, fail: %d\n",
 				__func__, ret);
-			return ret;
+			goto return_buffers;
 		}
 
 		if (inst->mirror_direction) {
@@ -1366,15 +1332,19 @@ static int wave5_vpu_enc_start_streaming(struct vb2_queue *q, unsigned int count
 			wave5_vpu_enc_give_command(inst, SET_ROTATION_ANGLE, &inst->rot_angle);
 		}
 
-		switch_state(inst, VPU_INST_STATE_OPEN);
+		ret = switch_state(inst, VPU_INST_STATE_OPEN);
+		if (ret)
+			goto return_buffers;
 	}
 	if (inst->state == VPU_INST_STATE_OPEN && m2m_ctx->cap_q_ctx.q.streaming) {
 		ret = initialize_sequence(inst);
 		if (ret) {
 			dev_warn(inst->dev->dev, "Sequence not found: %d\n", ret);
-			return ret;
+			goto return_buffers;
 		}
-		switch_state(inst, VPU_INST_STATE_INIT_SEQ);
+		ret = switch_state(inst, VPU_INST_STATE_INIT_SEQ);
+		if (ret)
+			goto return_buffers;
 		/*
 		 * The sequence must be analyzed first to calculate the proper
 		 * size of the auxiliary buffers.
@@ -1382,13 +1352,18 @@ static int wave5_vpu_enc_start_streaming(struct vb2_queue *q, unsigned int count
 		ret = prepare_fb(inst);
 		if (ret) {
 			dev_warn(inst->dev->dev, "Framebuffer preparation, fail: %d\n", ret);
-			return ret;
+			goto return_buffers;
 		}
 
-		switch_state(inst, VPU_INST_STATE_PIC_RUN);
+		ret = switch_state(inst, VPU_INST_STATE_PIC_RUN);
 	}
+	if (ret)
+		goto return_buffers;
 
 	return 0;
+return_buffers:
+	wave5_return_bufs(q, VB2_BUF_STATE_QUEUED);
+	return ret;
 }
 
 static void streamoff_output(struct vpu_instance *inst, struct vb2_queue *q)
@@ -1621,7 +1596,7 @@ static int wave5_vpu_open_enc(struct file *filp)
 	v4l2_ctrl_new_std_menu(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
 			       V4L2_CID_MPEG_VIDEO_HEVC_REFRESH_TYPE,
 			       V4L2_MPEG_VIDEO_HEVC_REFRESH_IDR, 0,
-			       V4L2_MPEG_VIDEO_HEVC_REFRESH_CRA);
+			       V4L2_MPEG_VIDEO_HEVC_REFRESH_IDR);
 	v4l2_ctrl_new_std(v4l2_ctrl_hdl, &wave5_vpu_enc_ctrl_ops,
 			  V4L2_CID_MPEG_VIDEO_HEVC_REFRESH_PERIOD,
 			  0, 2047, 1, 0);
@@ -1739,17 +1714,11 @@ static int wave5_vpu_open_enc(struct file *filp)
 	wave5_set_default_format(&inst->src_fmt, &inst->dst_fmt);
 	inst->colorspace = V4L2_COLORSPACE_REC709;
 	inst->ycbcr_enc = V4L2_YCBCR_ENC_DEFAULT;
-	inst->hsv_enc = 0;
 	inst->quantization = V4L2_QUANTIZATION_DEFAULT;
 	inst->xfer_func = V4L2_XFER_FUNC_DEFAULT;
 	inst->frame_rate = 30;
 
 	init_completion(&inst->irq_done);
-	ret = kfifo_alloc(&inst->irq_status, 16 * sizeof(int), GFP_KERNEL);
-	if (ret) {
-		dev_err(inst->dev->dev, "Allocating fifo, fail: %d\n", ret);
-		goto cleanup_inst;
-	}
 
 	inst->id = ida_alloc(&inst->dev->inst_ida, GFP_KERNEL);
 	if (inst->id < 0) {

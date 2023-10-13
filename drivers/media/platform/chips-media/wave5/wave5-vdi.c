@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - low level access functions
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #include <linux/bug.h>
@@ -165,11 +165,8 @@ int wave5_vdi_allocate_array(struct vpu_device *vpu_dev, struct vpu_buf *array, 
 		array[i] = vb_buf;
 	}
 
-	for (i = count; i < MAX_REG_FRAME; i++) {
-		ret = wave5_vdi_free_dma_memory(vpu_dev, &array[i]);
-		if (ret)
-			break;
-	}
+	for (i = count; i < MAX_REG_FRAME; i++)
+		wave5_vdi_free_dma_memory(vpu_dev, &array[i]);
 
 	return 0;
 }

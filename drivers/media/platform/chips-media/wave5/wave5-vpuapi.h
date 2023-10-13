@@ -2,13 +2,12 @@
 /*
  * Wave5 series multi-standard codec IP - helper definitions
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #ifndef VPUAPI_H_INCLUDED
 #define VPUAPI_H_INCLUDED
 
-#include <linux/kfifo.h>
 #include <linux/idr.h>
 #include <linux/genalloc.h>
 #include <media/v4l2-device.h>
@@ -40,6 +39,7 @@ enum vpu_instance_state {
 	VPU_INST_STATE_STOP = 4
 };
 
+/* Maximum available on hardware. */
 #define WAVE5_MAX_FBS 32
 
 #define MAX_REG_FRAME (WAVE5_MAX_FBS * 2)
@@ -322,8 +322,8 @@ struct vpu_attr {
 	u32 product_version;
 	u32 fw_version;
 	u32 customer_id;
-	u32 support_decoders; /* bitmask: see <<vpuapi_h_cod_std>> */
-	u32 support_encoders; /* bitmask: see <<vpuapi_h_cod_std>> */
+	u32 support_decoders; /* bitmask */
+	u32 support_encoders; /* bitmask */
 	u32 support_backbone: 1;
 	u32 support_avc10bit_enc: 1;
 	u32 support_hevc10bit_enc: 1;
@@ -771,7 +771,6 @@ struct vpu_instance {
 	struct v4l2_m2m_dev *v4l2_m2m_dev;
 	struct v4l2_ctrl_handler v4l2_ctrl_hdl;
 	struct vpu_device *dev;
-	struct kfifo irq_status;
 	struct completion irq_done;
 
 	struct v4l2_pix_format_mplane src_fmt;
@@ -780,7 +779,6 @@ struct vpu_instance {
 	enum v4l2_xfer_func xfer_func;
 	enum v4l2_ycbcr_encoding ycbcr_enc;
 	enum v4l2_quantization quantization;
-	enum v4l2_hsv_encoding hsv_enc;
 
 	enum vpu_instance_state state;
 	enum vpu_instance_type type;
@@ -796,7 +794,6 @@ struct vpu_instance {
 	struct frame_buffer frame_buf[MAX_REG_FRAME];
 	struct vpu_buf frame_vbuf[MAX_REG_FRAME];
 	u32 fbc_buf_count;
-	u32 dst_buf_count;
 	u32 queued_src_buf_num;
 	u32 queued_dst_buf_num;
 	struct list_head avail_src_bufs;
@@ -813,7 +810,6 @@ struct vpu_instance {
 	bool needs_reallocation;
 
 	unsigned int min_src_buf_count;
-	unsigned int src_buf_count;
 	unsigned int rot_angle;
 	unsigned int mirror_direction;
 	unsigned int bit_depth;

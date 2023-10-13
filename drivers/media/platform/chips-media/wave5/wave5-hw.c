@@ -2,7 +2,7 @@
 /*
  * Wave5 series multi-standard codec IP - wave5 backend logic
  *
- * Copyright (C) 2021 CHIPS&MEDIA INC
+ * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
 
 #include <linux/iopoll.h>
@@ -204,32 +204,53 @@ unsigned int wave5_vpu_get_product_id(struct vpu_device *vpu_dev)
 	return PRODUCT_ID_NONE;
 }
 
-void wave5_bit_issue_command(struct vpu_instance *inst, u32 cmd)
+static void wave5_bit_issue_command(struct vpu_device *vpu_dev, struct vpu_instance *inst, u32 cmd)
 {
-	u32 instance_index = inst->id;
-	u32 codec_mode = inst->std;
+	u32 instance_index;
+	u32 codec_mode;
 
-	vpu_write_reg(inst->dev, W5_CMD_INSTANCE_INFO, (codec_mode << 16) |
-			(instance_index & 0xffff));
-	vpu_write_reg(inst->dev, W5_VPU_BUSY_STATUS, 1);
-	vpu_write_reg(inst->dev, W5_COMMAND, cmd);
+	if (inst) {
+		instance_index = inst->id;
+		codec_mode = inst->std;
 
-	dev_dbg(inst->dev->dev, "%s: cmd=0x%x (%s)\n", __func__, cmd,
-		cmd_to_str(cmd, inst->type == VPU_INST_TYPE_DEC));
+		vpu_write_reg(vpu_dev, W5_CMD_INSTANCE_INFO, (codec_mode << 16) |
+			      (instance_index & 0xffff));
+		vpu_write_reg(vpu_dev, W5_VPU_BUSY_STATUS, 1);
+	}
 
-	vpu_write_reg(inst->dev, W5_VPU_HOST_INT_REQ, 1);
+	vpu_write_reg(vpu_dev, W5_COMMAND, cmd);
+
+	if (inst) {
+		dev_dbg(vpu_dev->dev, "%s: cmd=0x%x (%s)\n", __func__, cmd,
+			cmd_to_str(cmd, inst->type == VPU_INST_TYPE_DEC));
+	} else {
+		dev_dbg(vpu_dev->dev, "%s: cmd=0x%x\n", __func__, cmd);
+	}
+
+	vpu_write_reg(vpu_dev, W5_VPU_HOST_INT_REQ, 1);
 }
 
 static int wave5_vpu_firmware_command_queue_error_check(struct vpu_device *dev, u32 *fail_res)
 {
+	u32 reason = 0;
+
 	/* Check if we were able to add a command into the VCPU QUEUE */
 	if (!vpu_read_reg(dev, W5_RET_SUCCESS)) {
-		if (!fail_res)
+		reason = vpu_read_reg(dev, W5_RET_FAIL_REASON);
+		PRINT_REG_ERR(dev, reason);
+
+		/*
+		 * The fail_res argument will be either NULL or 0.
+		 * If the fail_res argument is NULL, then just return -EIO.
+		 * Otherwise, assign the reason to fail_res, so that the
+		 * calling function can use it.
+		 */
+		if (fail_res)
+			*fail_res = reason;
+		else
 			return -EIO;
 
-		*fail_res = vpu_read_reg(dev, W5_RET_FAIL_REASON);
-		PRINT_REG_ERR(dev, *fail_res);
-		if (*fail_res == WAVE5_SYSERR_VPU_STILL_RUNNING)
+		if (reason == WAVE5_SYSERR_VPU_STILL_RUNNING)
 			return -EBUSY;
 	}
 	return 0;
@@ -240,7 +261,7 @@ static int send_firmware_command(struct vpu_instance *inst, u32 cmd, bool check_
 {
 	int ret;
 
-	wave5_bit_issue_command(inst, cmd);
+	wave5_bit_issue_command(inst->dev, inst, cmd);
 	ret = wave5_wait_vpu_busy(inst->dev, W5_VPU_BUSY_STATUS);
 	if (ret) {
 		dev_warn(inst->dev->dev, "%s: command: '%s', timed out\n", __func__,
@@ -260,21 +281,22 @@ static int send_firmware_command(struct vpu_instance *inst, u32 cmd, bool check_
 	return wave5_vpu_firmware_command_queue_error_check(inst->dev, fail_result);
 }
 
-static int wave5_send_query(struct vpu_instance *inst, enum query_opt query_opt)
+static int wave5_send_query(struct vpu_device *vpu_dev, struct vpu_instance *inst,
+			    enum query_opt query_opt)
 {
 	int ret;
 
-	vpu_write_reg(inst->dev, W5_QUERY_OPTION, query_opt);
-	vpu_write_reg(inst->dev, W5_VPU_BUSY_STATUS, 1);
-	wave5_bit_issue_command(inst, W5_QUERY);
+	vpu_write_reg(vpu_dev, W5_QUERY_OPTION, query_opt);
+	vpu_write_reg(vpu_dev, W5_VPU_BUSY_STATUS, 1);
+	wave5_bit_issue_command(vpu_dev, inst, W5_QUERY);
 
-	ret = wave5_wait_vpu_busy(inst->dev, W5_VPU_BUSY_STATUS);
+	ret = wave5_wait_vpu_busy(vpu_dev, W5_VPU_BUSY_STATUS);
 	if (ret) {
-		dev_warn(inst->dev->dev, "command: 'W5_QUERY', timed out opt=0x%x\n", query_opt);
+		dev_warn(vpu_dev->dev, "command: 'W5_QUERY', timed out opt=0x%x\n", query_opt);
 		return ret;
 	}
 
-	return wave5_vpu_firmware_command_queue_error_check(inst->dev, NULL);
+	return wave5_vpu_firmware_command_queue_error_check(vpu_dev, NULL);
 }
 
 static int setup_wave5_properties(struct device *dev)
@@ -286,15 +308,7 @@ static int setup_wave5_properties(struct device *dev)
 	int ret;
 	u32 hw_config_def0, hw_config_def1, hw_config_feature;
 
-	vpu_write_reg(vpu_dev, W5_QUERY_OPTION, GET_VPU_INFO);
-	vpu_write_reg(vpu_dev, W5_VPU_BUSY_STATUS, 1);
-	vpu_write_reg(vpu_dev, W5_COMMAND, W5_QUERY);
-	vpu_write_reg(vpu_dev, W5_VPU_HOST_INT_REQ, 1);
-	ret = wave5_wait_vpu_busy(vpu_dev, W5_VPU_BUSY_STATUS);
-	if (ret)
-		return ret;
-
-	ret = wave5_vpu_firmware_command_queue_error_check(vpu_dev, NULL);
+	ret = wave5_send_query(vpu_dev, NULL, GET_VPU_INFO);
 	if (ret)
 		return ret;
 
@@ -334,21 +348,9 @@ int wave5_vpu_get_version(struct vpu_device *vpu_dev, u32 *revision)
 	u32 reg_val;
 	int ret;
 
-	vpu_write_reg(vpu_dev, W5_QUERY_OPTION, GET_VPU_INFO);
-	vpu_write_reg(vpu_dev, W5_VPU_BUSY_STATUS, 1);
-	vpu_write_reg(vpu_dev, W5_COMMAND, W5_QUERY);
-	vpu_write_reg(vpu_dev, W5_VPU_HOST_INT_REQ, 1);
-	ret = wave5_wait_vpu_busy(vpu_dev, W5_VPU_BUSY_STATUS);
-	if (ret) {
-		dev_err(vpu_dev->dev, "%s: timeout\n", __func__);
+	ret = wave5_send_query(vpu_dev, NULL, GET_VPU_INFO);
+	if (ret)
 		return ret;
-	}
-
-	ret = wave5_vpu_firmware_command_queue_error_check(vpu_dev, NULL);
-	if (ret) {
-		dev_err(vpu_dev->dev, "%s: failed\n", __func__);
-		return ret;
-	}
 
 	reg_val = vpu_read_reg(vpu_dev, W5_RET_FW_VERSION);
 	if (revision) {
@@ -567,7 +569,7 @@ int wave5_vpu_dec_init_seq(struct vpu_instance *inst)
 	vpu_write_reg(inst->dev, W5_CMD_DEC_USER_MASK, p_dec_info->user_data_enable);
 
 	ret = send_firmware_command(inst, W5_INIT_SEQ, true, &reg_val, &fail_res);
-	if (ret == -ETIMEDOUT)
+	if (ret)
 		return ret;
 
 	p_dec_info->instance_queue_count = (reg_val >> 16) & 0xff;
@@ -618,9 +620,9 @@ static void wave5_get_dec_seq_result(struct vpu_instance *inst, struct dec_initi
 		if (!info->profile) {
 			if ((profile_compatibility_flag & 0x06) == 0x06)
 				info->profile = HEVC_PROFILE_MAIN; /* main profile */
-			else if ((profile_compatibility_flag & 0x04) == 0x04)
+			else if (profile_compatibility_flag & 0x04)
 				info->profile = HEVC_PROFILE_MAIN10; /* main10 profile */
-			else if ((profile_compatibility_flag & 0x08) == 0x08)
+			else if (profile_compatibility_flag & 0x08)
 				/* main still picture profile */
 				info->profile = HEVC_PROFILE_STILLPICTURE;
 			else
@@ -647,14 +649,9 @@ int wave5_vpu_dec_get_seq_info(struct vpu_instance *inst, struct dec_initial_inf
 	vpu_write_reg(inst->dev, W5_CMD_DEC_REPORT_PARAM, REPORT_PARAM_ENDIANNESS_BIG_ENDIAN);
 
 	/* send QUERY cmd */
-	ret = wave5_send_query(inst, GET_RESULT);
-	if (ret) {
-		if (ret == -EIO) {
-			reg_val = vpu_read_reg(inst->dev, W5_RET_FAIL_REASON);
-			PRINT_REG_ERR(inst->dev, reg_val);
-		}
+	ret = wave5_send_query(inst->dev, inst, GET_RESULT);
+	if (ret)
 		return ret;
-	}
 
 	reg_val = vpu_read_reg(inst->dev, W5_RET_QUEUE_STATUS);
 
@@ -761,8 +758,6 @@ int wave5_vpu_dec_register_framebuffer(struct vpu_instance *inst, struct frame_b
 
 		if (inst->output_format == FORMAT_422)
 			color_format = 1;
-		else
-			color_format = 0;
 	}
 	vpu_write_reg(inst->dev, W5_PIC_SIZE, pic_size);
 
@@ -894,15 +889,9 @@ int wave5_vpu_dec_get_result(struct vpu_instance *inst, struct dec_output_info *
 	vpu_write_reg(inst->dev, W5_CMD_DEC_REPORT_PARAM, REPORT_PARAM_ENDIANNESS_BIG_ENDIAN);
 
 	/* send QUERY cmd */
-	ret = wave5_send_query(inst, GET_RESULT);
-	if (ret) {
-		if (ret == -EIO) {
-			reg_val = vpu_read_reg(inst->dev, W5_RET_FAIL_REASON);
-			PRINT_REG_ERR(inst->dev, reg_val);
-		}
-
+	ret = wave5_send_query(vpu_dev, inst, GET_RESULT);
+	if (ret)
 		return ret;
-	}
 
 	reg_val = vpu_read_reg(inst->dev, W5_RET_QUEUE_STATUS);
 
@@ -1320,16 +1309,10 @@ int wave5_dec_clr_disp_flag(struct vpu_instance *inst, unsigned int index)
 
 	vpu_write_reg(inst->dev, W5_CMD_DEC_CLR_DISP_IDC, BIT(index));
 	vpu_write_reg(inst->dev, W5_CMD_DEC_SET_DISP_IDC, 0);
-	ret = wave5_send_query(inst, UPDATE_DISP_FLAG);
 
-	if (ret) {
-		if (ret == -EIO) {
-			u32 reg_val = vpu_read_reg(inst->dev, W5_RET_FAIL_REASON);
-
-			PRINT_REG_ERR(inst->dev, reg_val);
-		}
+	ret = wave5_send_query(inst->dev, inst, UPDATE_DISP_FLAG);
+	if (ret)
 		return ret;
-	}
 
 	p_dec_info->frame_display_flag = vpu_read_reg(inst->dev, W5_RET_DEC_DISP_IDC);
 
@@ -1342,16 +1325,10 @@ int wave5_dec_set_disp_flag(struct vpu_instance *inst, unsigned int index)
 
 	vpu_write_reg(inst->dev, W5_CMD_DEC_CLR_DISP_IDC, 0);
 	vpu_write_reg(inst->dev, W5_CMD_DEC_SET_DISP_IDC, BIT(index));
-	ret = wave5_send_query(inst, UPDATE_DISP_FLAG);
 
-	if (ret) {
-		if (ret == -EIO) {
-			u32 reg_val = vpu_read_reg(inst->dev, W5_RET_FAIL_REASON);
-
-			PRINT_REG_ERR(inst->dev, reg_val);
-		}
+	ret = wave5_send_query(inst->dev, inst, UPDATE_DISP_FLAG);
+	if (ret)
 		return ret;
-	}
 
 	return 0;
 }
@@ -1371,8 +1348,7 @@ dma_addr_t wave5_dec_get_rd_ptr(struct vpu_instance *inst)
 {
 	int ret;
 
-	ret = wave5_send_query(inst, GET_BS_RD_PTR);
-
+	ret = wave5_send_query(inst->dev, inst, GET_BS_RD_PTR);
 	if (ret)
 		return inst->codec_info->dec_info.stream_rd_ptr;
 
@@ -1385,7 +1361,7 @@ int wave5_dec_set_rd_ptr(struct vpu_instance *inst, dma_addr_t addr)
 
 	vpu_write_reg(inst->dev, W5_RET_QUERY_DEC_SET_BS_RD_PTR, addr);
 
-	ret = wave5_send_query(inst, SET_BS_RD_PTR);
+	ret = wave5_send_query(inst->dev, inst, SET_BS_RD_PTR);
 
 	return ret;
 }
@@ -1452,7 +1428,8 @@ int wave5_vpu_build_up_enc_param(struct device *dev, struct vpu_instance *inst,
 
 	return 0;
 free_vb_work:
-	wave5_vdi_free_dma_memory(vpu_dev, &p_enc_info->vb_work);
+	if (wave5_vdi_free_dma_memory(vpu_dev, &p_enc_info->vb_work))
+		memset(&p_enc_info->vb_work, 0, sizeof(p_enc_info->vb_work));
 	return ret;
 }
 
@@ -1491,6 +1468,8 @@ static void wave5_set_enc_crop_info(u32 codec, struct enc_wave_param *param, int
 	param->conf_win_right = crop_right;
 
 	switch (prp_mode) {
+	case 0:
+		return;
 	case 1:
 	case 15:
 		param->conf_win_top = crop_right;
@@ -1659,8 +1638,8 @@ int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 		reg_val |= (p_param->mb_level_rc_enable << 1);
 	else if (inst->std == W_HEVC_ENC)
 		reg_val |= (p_param->cu_level_rc_enable << 1);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_RC_PARAM, reg_val);
 
-	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_RC_PARAM, 0);
 	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_RC_WEIGHT_PARAM,
 		      p_param->rc_weight_buf << 8 | p_param->rc_weight_param);
 
@@ -1671,8 +1650,12 @@ int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 		      (p_param->max_qp_p << 6) | (p_param->min_qp_b << 12) |
 		      (p_param->max_qp_b << 18));
 
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_RC_BIT_RATIO_LAYER_0_3, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_RC_BIT_RATIO_LAYER_4_7, 0);
 	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_ROT_PARAM, rot_mir_mode);
 
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_BG_PARAM, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_LAMBDA_ADDR, 0);
 	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CONF_WIN_TOP_BOT,
 		      p_param->conf_win_bot << 16 | p_param->conf_win_top);
 	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CONF_WIN_LEFT_RIGHT,
@@ -1686,7 +1669,19 @@ int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 			      p_param->independ_slice_mode_arg << 16 |
 			      p_param->independ_slice_mode);
 
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_USER_SCALING_LIST_ADDR, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_NUM_UNITS_IN_TICK, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_TIME_SCALE, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_NUM_TICKS_POC_DIFF_ONE, 0);
+
 	if (inst->std == W_HEVC_ENC) {
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_MD_PU04, 0);
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_MD_PU08, 0);
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_MD_PU16, 0);
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_MD_PU32, 0);
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_MD_CU08, 0);
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_MD_CU16, 0);
+		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_CUSTOM_MD_CU32, 0);
 		vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_DEPENDENT_SLICE,
 			      p_param->depend_slice_mode_arg << 16 | p_param->depend_slice_mode);
 
@@ -1700,6 +1695,7 @@ int wave5_vpu_enc_init_seq(struct vpu_instance *inst)
 			      (p_param->nr_inter_weight_cb << 20) |
 			      (p_param->nr_inter_weight_cr << 25));
 	}
+	vpu_write_reg(inst->dev, W5_CMD_ENC_SEQ_VUI_HRD_PARAM, 0);
 
 	return send_firmware_command(inst, W5_ENC_SET_PARAM, true, NULL, NULL);
 }
@@ -1711,14 +1707,9 @@ int wave5_vpu_enc_get_seq_info(struct vpu_instance *inst, struct enc_initial_inf
 	struct enc_info *p_enc_info = &inst->codec_info->enc_info;
 
 	/* send QUERY cmd */
-	ret = wave5_send_query(inst, GET_RESULT);
-	if (ret) {
-		if (ret == -EIO) {
-			reg_val = vpu_read_reg(inst->dev, W5_RET_FAIL_REASON);
-			PRINT_REG_ERR(inst->dev, reg_val);
-		}
+	ret = wave5_send_query(inst->dev, inst, GET_RESULT);
+	if (ret)
 		return ret;
-	}
 
 	dev_dbg(inst->dev->dev, "%s: init seq\n", __func__);
 
@@ -2003,6 +1994,8 @@ int wave5_vpu_encode(struct vpu_instance *inst, struct enc_param *option, u32 *f
 			      (option->code_option.encode_eos << 6) |
 			      (option->code_option.encode_eob << 7));
 
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_PIC_PARAM, 0);
+
 	if (option->src_end_flag)
 		/* no more source images. */
 		vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_SRC_PIC_IDX, 0xFFFFFFFF);
@@ -2106,6 +2099,18 @@ int wave5_vpu_encode(struct vpu_instance *inst, struct enc_param *option, u32 *f
 	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_SRC_FORMAT, src_frame_format |
 		      (format_no << 3) | (justified << 5) | (PIC_SRC_ENDIANNESS_BIG_ENDIAN << 6));
 
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_CUSTOM_MAP_OPTION_ADDR, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_CUSTOM_MAP_OPTION_PARAM, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_LONGTERM_PIC, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_WP_PIXEL_SIGMA_Y, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_WP_PIXEL_SIGMA_C, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_WP_PIXEL_MEAN_Y, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_WP_PIXEL_MEAN_C, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_PREFIX_SEI_INFO, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_PREFIX_SEI_NAL_ADDR, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_SUFFIX_SEI_INFO, 0);
+	vpu_write_reg(inst->dev, W5_CMD_ENC_PIC_SUFFIX_SEI_NAL_ADDR, 0);
+
 	ret = send_firmware_command(inst, W5_DEC_ENC_PIC, true, &reg_val, fail_res);
 	if (ret == -ETIMEDOUT)
 		return ret;
@@ -2127,14 +2132,10 @@ int wave5_vpu_enc_get_result(struct vpu_instance *inst, struct enc_output_info *
 	struct enc_info *p_enc_info = &inst->codec_info->enc_info;
 	struct vpu_device *vpu_dev = inst->dev;
 
-	ret = wave5_send_query(inst, GET_RESULT);
-	if (ret) {
-		if (ret == -EIO) {
-			reg_val = vpu_read_reg(inst->dev, W5_RET_FAIL_REASON);
-			PRINT_REG_ERR(inst->dev, reg_val);
-		}
+	ret = wave5_send_query(inst->dev, inst, GET_RESULT);
+	if (ret)
 		return ret;
-	}
+
 	dev_dbg(inst->dev->dev, "%s: enc pic complete\n", __func__);
 
 	reg_val = vpu_read_reg(inst->dev, W5_RET_QUEUE_STATUS);

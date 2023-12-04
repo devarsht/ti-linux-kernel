@@ -1409,16 +1409,8 @@ static int wave5_vpu_dec_start_streaming(struct vb2_queue *q, unsigned int count
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE && inst->state == VPU_INST_STATE_NONE) {
 		struct dec_open_param open_param;
-		int err = 0;
 
 		memset(&open_param, 0, sizeof(struct dec_open_param));
-
-		err = pm_runtime_resume_and_get(inst->dev->dev);
-		if (err) {
-			dev_err(inst->dev->dev, "decoder runtime resume failed %d\n", err);
-			ret = -EINVAL;
-			goto return_buffers;
-		}
 
 		ret = wave5_vpu_dec_allocate_ring_buffer(inst);
 		if (ret)
@@ -1840,7 +1832,6 @@ static int wave5_vpu_open_dec(struct file *filp)
 	v4l2_fh_add(&inst->v4l2_fh);
 
 	INIT_LIST_HEAD(&inst->list);
-	list_add_tail(&inst->list, &dev->instances);
 
 	inst->v4l2_m2m_dev = inst->dev->v4l2_m2m_dec_dev;
 	inst->v4l2_fh.m2m_ctx =
@@ -1896,6 +1887,25 @@ static int wave5_vpu_open_dec(struct file *filp)
 	}
 
 	wave5_vdi_allocate_sram(inst->dev);
+
+	ret = pm_runtime_resume_and_get(inst->dev->dev);
+	if (ret) {
+		dev_err(inst->dev->dev, "decoder runtime resume failed %d\n", ret);
+		ret = -EINVAL;
+		goto cleanup_inst;
+	}
+
+	ret = mutex_lock_interruptible(&dev->dev_lock);
+	if (ret)
+		goto cleanup_inst;
+
+	if (dev->irq < 0 && !hrtimer_active(&dev->hrtimer) && list_empty(&dev->instances))
+		hrtimer_start(&dev->hrtimer, ns_to_ktime(dev->vpu_poll_interval * NSEC_PER_MSEC),
+			      HRTIMER_MODE_REL_PINNED);
+
+	list_add_tail(&inst->list, &dev->instances);
+
+	mutex_unlock(&dev->dev_lock);
 
 	return 0;
 

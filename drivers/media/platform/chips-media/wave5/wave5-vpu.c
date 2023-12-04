@@ -27,6 +27,9 @@ struct wave5_match_data {
 	const char *fw_name;
 };
 
+static int vpu_poll_interval = 5;
+module_param(vpu_poll_interval, int, 0644);
+
 int wave5_vpu_wait_interrupt(struct vpu_instance *inst, unsigned int timeout)
 {
 	int ret;
@@ -83,6 +86,61 @@ static irqreturn_t wave5_vpu_irq_thread(int irq, void *dev_id)
 	}
 
 	return IRQ_HANDLED;
+}
+
+static void wave5_vpu_irq_work_fn(struct kthread_work *work)
+{
+	u32 seq_done;
+	u32 cmd_done;
+	u32 irq_reason;
+	struct vpu_instance *inst;
+	struct vpu_device *dev = container_of(work, struct vpu_device, work);
+	if (wave5_vdi_read_register(dev, W5_VPU_VPU_INT_STS)) {
+		irq_reason = wave5_vdi_read_register(dev, W5_VPU_VINT_REASON);
+		wave5_vdi_write_register(dev, W5_VPU_VINT_REASON_CLR, irq_reason);
+		wave5_vdi_write_register(dev, W5_VPU_VINT_CLEAR, 0x1);
+
+		list_for_each_entry(inst, &dev->instances, list) {
+			seq_done = wave5_vdi_read_register(dev, W5_RET_SEQ_DONE_INSTANCE_INFO);
+			cmd_done = wave5_vdi_read_register(dev, W5_RET_QUEUE_CMD_DONE_INST);
+
+			if (irq_reason & BIT(INT_WAVE5_INIT_SEQ) ||
+			    irq_reason & BIT(INT_WAVE5_ENC_SET_PARAM)) {
+				if (seq_done & BIT(inst->id)) {
+					seq_done &= ~BIT(inst->id);
+					wave5_vdi_write_register(dev, W5_RET_SEQ_DONE_INSTANCE_INFO,
+								 seq_done);
+					complete(&inst->irq_done);
+				}
+			}
+
+			if (irq_reason & BIT(INT_WAVE5_DEC_PIC) ||
+			    irq_reason & BIT(INT_WAVE5_ENC_PIC)) {
+				if (cmd_done & BIT(inst->id)) {
+					cmd_done &= ~BIT(inst->id);
+					wave5_vdi_write_register(dev, W5_RET_QUEUE_CMD_DONE_INST,
+								 cmd_done);
+					inst->ops->finish_process(inst);
+				}
+			}
+
+			wave5_vpu_clear_interrupt(inst, irq_reason);
+		}
+	}
+
+	return;
+}
+
+static enum hrtimer_restart wave5_vpu_timer_callback(struct hrtimer *timer)
+{
+	irqreturn_t ret;
+	struct vpu_device *dev =
+			container_of(timer, struct vpu_device, hrtimer);
+
+	kthread_queue_work(dev->worker, &dev->work);
+	hrtimer_forward_now(timer, ns_to_ktime(vpu_poll_interval * NSEC_PER_MSEC));
+
+	return HRTIMER_RESTART;
 }
 
 static int wave5_vpu_load_firmware(struct device *dev, const char *fw_name,
@@ -270,16 +328,24 @@ static int wave5_vpu_probe(struct platform_device *pdev)
 
 	dev->irq = platform_get_irq(pdev, 0);
 	if (dev->irq < 0) {
-		dev_err(&pdev->dev, "failed to get irq resource\n");
-		ret = -ENXIO;
-		goto err_enc_unreg;
-	}
-
-	ret = devm_request_threaded_irq(&pdev->dev, dev->irq, NULL,
+		dev_err(&pdev->dev, "failed to get irq resource, falling back to polling\n");
+		hrtimer_init(&dev->hrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED);
+		dev->hrtimer.function = &wave5_vpu_timer_callback;
+		dev->worker = kthread_create_worker(0, "vpu_irq_thread");
+		if (IS_ERR(dev->worker)) {
+			dev_err(&pdev->dev, "failed to create vpu irq worker\n");
+			ret = PTR_ERR(dev->worker);
+			goto err_vdi_release;
+		}
+		dev->vpu_poll_interval = vpu_poll_interval;
+		kthread_init_work(&dev->work, wave5_vpu_irq_work_fn);
+	} else {
+		ret = devm_request_threaded_irq(&pdev->dev, dev->irq, NULL,
 					wave5_vpu_irq_thread, IRQF_ONESHOT, "vpu_irq", dev);
-	if (ret) {
-		dev_err(&pdev->dev, "Register interrupt handler, fail: %d\n", ret);
-		goto err_enc_unreg;
+		if (ret) {
+			dev_err(&pdev->dev, "Register interrupt handler, fail: %d\n", ret);
+			goto err_enc_unreg;
+		}
 	}
 
 	ret = wave5_vpu_load_firmware(&pdev->dev, match_data->fw_name, &fw_revision);
@@ -321,6 +387,11 @@ static int wave5_vpu_remove(struct platform_device *pdev)
 
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+
+	if (dev->irq < 0) {
+		kthread_destroy_worker(dev->worker);
+		hrtimer_cancel(&dev->hrtimer);
+	}
 
 	mutex_destroy(&dev->dev_lock);
 	mutex_destroy(&dev->hw_lock);

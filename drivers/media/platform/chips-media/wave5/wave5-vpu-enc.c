@@ -4,7 +4,7 @@
  *
  * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
-
+#define DEBUG
 #include <linux/pm_runtime.h>
 #include "wave5-helper.h"
 
@@ -318,6 +318,10 @@ static void wave5_vpu_enc_finish_encode(struct vpu_instance *inst)
 	struct enc_output_info enc_output_info;
 	struct vb2_v4l2_buffer *src_buf = NULL;
 	struct vb2_v4l2_buffer *dst_buf = NULL;
+	u32 irq_status;
+
+	if (kfifo_out(&inst->irq_status, &irq_status, sizeof(int)))
+		wave5_vpu_clear_interrupt_ex(inst, irq_status);
 
 	ret = wave5_vpu_enc_get_output_info(inst, &enc_output_info);
 	if (ret) {
@@ -1805,6 +1809,11 @@ static int wave5_vpu_open_enc(struct file *filp)
 	inst->frame_rate = 30;
 
 	init_completion(&inst->irq_done);
+	ret = kfifo_alloc(&inst->irq_status, 16 * sizeof(int), GFP_KERNEL);
+	if (ret) {
+		dev_err(inst->dev->dev, "Allocating fifo, fail: %d\n", ret);
+		goto cleanup_inst;
+	}
 
 	inst->id = ida_alloc(&inst->dev->inst_ida, GFP_KERNEL);
 	if (inst->id < 0) {

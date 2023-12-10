@@ -8,6 +8,7 @@
 #ifndef VPUAPI_H_INCLUDED
 #define VPUAPI_H_INCLUDED
 
+#include <linux/kfifo.h>
 #include <linux/idr.h>
 #include <linux/genalloc.h>
 #include <media/v4l2-device.h>
@@ -777,6 +778,7 @@ struct vpu_instance {
 	struct v4l2_m2m_dev *v4l2_m2m_dev;
 	struct v4l2_ctrl_handler v4l2_ctrl_hdl;
 	struct vpu_device *dev;
+	struct kfifo irq_status;
 	struct completion irq_done;
 
 	struct v4l2_pix_format_mplane src_fmt;
@@ -843,6 +845,7 @@ void wave5_vdi_free_sram(struct vpu_device *vpu_dev);
 int wave5_vpu_init_with_bitcode(struct device *dev, u8 *bitcode, size_t size);
 int wave5_vpu_flush_instance(struct vpu_instance *inst);
 int wave5_vpu_get_version_info(struct device *dev, u32 *revision, unsigned int *product_id);
+void wave5_vpu_clear_interrupt_ex(struct vpu_instance *inst, u32 intr_flag);
 int wave5_vpu_dec_open(struct vpu_instance *inst, struct dec_open_param *open_param);
 int wave5_vpu_dec_close(struct vpu_instance *inst, u32 *fail_res);
 int wave5_vpu_dec_issue_seq_init(struct vpu_instance *inst);

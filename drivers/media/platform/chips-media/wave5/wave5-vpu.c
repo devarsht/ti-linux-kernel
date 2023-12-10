@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2021-2023 CHIPS&MEDIA INC
  */
+#define DEBUG
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -88,6 +89,44 @@ static irqreturn_t wave5_vpu_irq_thread(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static void wave5_vpu_get_interrupt_for_inst(struct vpu_instance *inst, u32 status)
+{
+	struct vpu_device *dev = inst->dev;
+	u32 seq_done;
+	u32 cmd_done;
+	int val;
+
+	seq_done = wave5_vdi_read_register(dev, W5_RET_SEQ_DONE_INSTANCE_INFO);
+	cmd_done = wave5_vdi_read_register(dev, W5_RET_QUEUE_CMD_DONE_INST);
+
+	if (status & BIT(INT_WAVE5_INIT_SEQ)) {
+		if (seq_done & BIT(inst->id)) {
+			seq_done &= ~BIT(inst->id);
+			wave5_vdi_write_register(dev, W5_RET_SEQ_DONE_INSTANCE_INFO, seq_done);
+			val = BIT(INT_WAVE5_INIT_SEQ);
+			kfifo_in(&inst->irq_status, &val, sizeof(int));
+		}
+	}
+	if (status & BIT(INT_WAVE5_ENC_SET_PARAM)) {
+		if (seq_done & BIT(inst->id)) {
+			seq_done &= ~BIT(inst->id);
+			wave5_vdi_write_register(dev, W5_RET_SEQ_DONE_INSTANCE_INFO, seq_done);
+			val = BIT(INT_WAVE5_ENC_SET_PARAM);
+			kfifo_in(&inst->irq_status, &val, sizeof(int));
+		}
+	}
+	if (status & BIT(INT_WAVE5_DEC_PIC) ||
+	    status & BIT(INT_WAVE5_ENC_PIC)) {
+		if (cmd_done & BIT(inst->id)) {
+			cmd_done &= ~BIT(inst->id);
+			wave5_vdi_write_register(dev, W5_RET_QUEUE_CMD_DONE_INST, cmd_done);
+			val = BIT(INT_WAVE5_DEC_PIC);
+			kfifo_in(&inst->irq_status, &val, sizeof(int));
+		}
+	}
+}
+
+#if 0
 static void wave5_vpu_irq_work_fn(struct kthread_work *work)
 {
 	u32 seq_done;
@@ -130,6 +169,56 @@ static void wave5_vpu_irq_work_fn(struct kthread_work *work)
 
 	return;
 }
+#endif
+
+static void wave5_vpu_irq_work_fn(struct kthread_work *work)
+{
+	struct vpu_device *dev = container_of(work, struct vpu_device, work);
+	struct vpu_instance *inst;
+	int irq_status, ret;
+	u32 val;
+
+	list_for_each_entry(inst, &dev->instances, list) {
+		while (kfifo_len(&inst->irq_status)) {
+			struct vpu_instance *curr;
+
+			curr = v4l2_m2m_get_curr_priv(inst->v4l2_m2m_dev);
+			if (curr) {
+				inst->ops->finish_process(inst);
+			} else {
+				ret = kfifo_out(&inst->irq_status, &irq_status, sizeof(int));
+				if (!ret)
+					break;
+
+				val = wave5_vdi_read_register(dev, W5_VPU_VINT_REASON_USR);
+				val &= ~irq_status;
+				wave5_vdi_write_register(dev, W5_VPU_VINT_REASON_USR, val);
+				complete(&inst->irq_done);
+			}
+		}
+	}
+}
+
+static irqreturn_t wave5_vpu_irq(int irq, void *dev_id)
+{
+	struct vpu_device *dev = dev_id;
+
+	if (wave5_vdi_read_register(dev, W5_VPU_VPU_INT_STS)) {
+		struct vpu_instance *inst;
+		u32 irq_status = wave5_vdi_read_register(dev, W5_VPU_VINT_REASON);
+
+		list_for_each_entry(inst, &dev->instances, list) {
+			wave5_vpu_get_interrupt_for_inst(inst, irq_status);
+		}
+
+		wave5_vdi_write_register(dev, W5_VPU_VINT_REASON_CLR, irq_status);
+		wave5_vdi_write_register(dev, W5_VPU_VINT_CLEAR, 0x1);
+
+		return IRQ_WAKE_THREAD;
+	}
+
+	return IRQ_HANDLED;
+}
 
 static enum hrtimer_restart wave5_vpu_timer_callback(struct hrtimer *timer)
 {
@@ -137,7 +226,11 @@ static enum hrtimer_restart wave5_vpu_timer_callback(struct hrtimer *timer)
 	struct vpu_device *dev =
 			container_of(timer, struct vpu_device, hrtimer);
 
-	kthread_queue_work(dev->worker, &dev->work);
+	ret = wave5_vpu_irq(0, dev);
+
+	if (ret == IRQ_WAKE_THREAD)
+		kthread_queue_work(dev->worker, &dev->work);
+
 	hrtimer_forward_now(timer, ns_to_ktime(vpu_poll_interval * NSEC_PER_MSEC));
 
 	return HRTIMER_RESTART;

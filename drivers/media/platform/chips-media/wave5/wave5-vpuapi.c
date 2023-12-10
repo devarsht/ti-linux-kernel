@@ -14,6 +14,11 @@
 #define DECODE_ALL_TEMPORAL_LAYERS 0
 #define DECODE_ALL_SPATIAL_LAYERS 0
 
+void wave5_vpu_clear_interrupt_ex(struct vpu_instance *inst, u32 intr_flag)
+{
+	wave5_vpu_clear_interrupt(inst, intr_flag);
+}
+
 static int wave5_initialize_vpu(struct device *dev, u8 *code, size_t size)
 {
 	int ret;

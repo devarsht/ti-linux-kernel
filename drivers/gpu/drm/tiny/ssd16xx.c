@@ -661,6 +661,76 @@ static void ssd16xx_convert_fb_to_1bpp(u8 *dst, struct iosys_map *src,
 	}
 }
 
+/*
+ * Convert XRGB8888 framebuffer to 3-color format
+ * Separates red component and grayscale for 3-color e-paper panels
+ *
+ * For each pixel:
+ * - If red component dominant (R > threshold AND R > G AND R > B): set red bit
+ * - Otherwise: calculate grayscale and set BW bit
+ *
+ * This allows displaying red/black/white content on 3-color panels
+ */
+static void ssd16xx_convert_fb_to_3color(u8 *bw_dst, u8 *red_dst,
+					 struct iosys_map *src,
+					 struct drm_framebuffer *fb,
+					 struct drm_rect *rect)
+{
+	unsigned int x, y;
+	u32 *src_line;
+	u8 bw_byte = 0, red_byte = 0;
+	unsigned int bit_pos = 0;
+	unsigned int dst_idx = 0;
+
+	for (y = rect->y1; y < rect->y2; y++) {
+		src_line = (u32 *)(src->vaddr + y * fb->pitches[0]);
+
+		for (x = rect->x1; x < rect->x2; x++) {
+			u32 pixel = src_line[x];
+			u8 r = (pixel >> 16) & 0xFF;
+			u8 g = (pixel >> 8) & 0xFF;
+			u8 b = pixel & 0xFF;
+
+			/*
+			 * Detect red pixels: R component must be dominant
+			 * Threshold: R > 127 AND R > G AND R > B
+			 */
+			if (r > 127 && r > g && r > b) {
+				/* Red pixel: set red bit, clear BW bit (will show red) */
+				red_byte |= (1 << (7 - bit_pos));
+			} else {
+				/* Not red: calculate grayscale for BW RAM */
+				unsigned int luma_scaled = 299 * r + 587 * g + 114 * b;
+
+				/* White pixels: set BW bit */
+				if (luma_scaled > 127000)
+					bw_byte |= (1 << (7 - bit_pos));
+				/* Black pixels: both bits clear (will show black) */
+			}
+
+			bit_pos++;
+			if (bit_pos == 8) {
+				bw_dst[dst_idx] = bw_byte;
+				red_dst[dst_idx] = red_byte;
+				dst_idx++;
+				bw_byte = 0;
+				red_byte = 0;
+				bit_pos = 0;
+			}
+		}
+
+		/* Handle partial byte at end of line */
+		if (bit_pos > 0) {
+			bw_dst[dst_idx] = bw_byte;
+			red_dst[dst_idx] = red_byte;
+			dst_idx++;
+			bw_byte = 0;
+			red_byte = 0;
+			bit_pos = 0;
+		}
+	}
+}
+
 static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 			     struct ssd16xx_panel *panel)
 {
@@ -669,10 +739,27 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 	struct ssd16xx_error_ctx err = { .errno_code = 0 };
 	unsigned int data_size = (panel->width * panel->height) / 8;
 	u8 *mono_buffer;
+	u8 *red_buffer = NULL;
+	bool use_3color_conversion = false;
 
 	mono_buffer = kzalloc(data_size, GFP_KERNEL);
 	if (!mono_buffer)
 		return;
+
+	/*
+	 * For 3-color panels in FULL refresh mode, we need separate
+	 * red and grayscale buffers to properly display red content
+	 */
+	if (panel->partial_mode_ready &&
+	    panel->panel_cfg->red_supported &&
+	    panel->refresh_mode == SSD16XX_REFRESH_FULL) {
+		red_buffer = kzalloc(data_size, GFP_KERNEL);
+		if (!red_buffer) {
+			kfree(mono_buffer);
+			return;
+		}
+		use_3color_conversion = true;
+	}
 
 	iosys_map_set_vaddr(&map, dma_obj->vaddr);
 
@@ -695,7 +782,13 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 			panel->width, panel->height);
 	}
 
-	ssd16xx_convert_fb_to_1bpp(mono_buffer, &map, fb, rect);
+	if (use_3color_conversion) {
+		/* Separate red and grayscale for 3-color panels */
+		ssd16xx_convert_fb_to_3color(mono_buffer, red_buffer, &map, fb, rect);
+	} else {
+		/* Standard grayscale conversion */
+		ssd16xx_convert_fb_to_1bpp(mono_buffer, &map, fb, rect);
+	}
 
 	/* Set RAM address counters to start position */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_SET_RAM_X_ADDRESS_COUNTER, &err);
@@ -724,9 +817,9 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 			 */
 			if (panel->panel_cfg->red_supported) {
 				ssd16xx_display_update(panel, 0x00, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
-				/* Sync RED RAM for 3-color panels */
+				/* Write red component to RED RAM for 3-color panels */
 				ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
-				ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
+				ssd16xx_send_data_bulk(panel, red_buffer, data_size, &err);
 			} else {
 				ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
 			}
@@ -777,6 +870,7 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 		drm_err(&panel->drm, "Display update failed: %d\n", err.errno_code);
 
 	kfree(mono_buffer);
+	kfree(red_buffer);
 }
 
 static void ssd16xx_pipe_update(struct drm_simple_display_pipe *pipe,

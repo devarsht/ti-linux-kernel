@@ -51,6 +51,22 @@
 
 #define SSD16XX_SLEEP_MODE_1				0x01
 
+/*
+ * Display Update Control 1 (0x21) byte 1 definitions - from SSD1683 datasheet
+ *
+ * Byte 1 controls RAM configuration:
+ * - Bit 7: Not used
+ * - Bit 6: RED RAM option (0 = normal, 1 = bypass RED RAM)
+ * - Bit 5: Not used
+ * - Bit 4: Not used
+ * - Bits 3-0: Not used
+ *
+ * Byte 2 is usually 0x00 (default settings)
+ */
+#define SSD16XX_CTRL1_NORMAL			0x00  /* Both RAMs enabled (default) */
+#define SSD16XX_CTRL1_BYPASS_RED_RAM		0x40  /* Bypass RED RAM (force RED=0) */
+#define SSD16XX_CTRL1_BYTE2_DEFAULT		0x00  /* Byte 2 default value */
+
 /* Display Update Control 2 (0x22) bit definitions - from SSD1683 datasheet */
 #define SSD16XX_CTRL2_ENABLE_CLK			BIT(7)  /* Enable clock signal */
 #define SSD16XX_CTRL2_ENABLE_ANALOG			BIT(6)  /* Enable analog */
@@ -271,8 +287,8 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 		.driver_output_ctrl_byte3 = 0x00,
 		.border_waveform_init = 0x05,
 		.border_waveform_partial = 0x80,
-		.display_update_ctrl1_init = { 0x40, 0x00 },
-		.display_update_ctrl1_partial = { 0x00, 0x00 },
+		.display_update_ctrl1_init = { SSD16XX_CTRL1_BYPASS_RED_RAM, SSD16XX_CTRL1_BYTE2_DEFAULT },
+		.display_update_ctrl1_partial = { SSD16XX_CTRL1_NORMAL, SSD16XX_CTRL1_BYTE2_DEFAULT },
 		.temp_sensor_control = 0x6E,
 		.temp_load_sequence = 0x91,
 		.temp_sensor_update = 0x80,
@@ -450,12 +466,14 @@ static void ssd16xx_send_data_bulk(struct ssd16xx_panel *panel,
  * Trigger display update with Display Update Control configuration
  *
  * @ctrl1_byte1: Display Update Control 1 byte 1
- *               0x00 = Normal (both RAMs enabled)
- *               0x40 = Bypass RED RAM
- * @ctrl1_byte2: Display Update Control 1 byte 2 (usually 0x00)
+ *               SSD16XX_CTRL1_NORMAL = Both RAMs enabled
+ *               SSD16XX_CTRL1_BYPASS_RED_RAM = Bypass RED RAM
+ * @ctrl1_byte2: Display Update Control 1 byte 2
+ *               SSD16XX_CTRL1_BYTE2_DEFAULT = Default settings
  * @ctrl2_mode: Display Update Control 2 mode
- *              0xF7 = 3-color mode (full refresh, ~2s)
- *              0xFF = BW mode (partial refresh, ~0.3s)
+ *              SSD1683_CTRL2_FULL_REFRESH = Full refresh (~1.5-2s)
+ *              SSD1683_CTRL2_FAST_REFRESH = Fast refresh (~1.0-1.5s)
+ *              SSD1683_CTRL2_PARTIAL_REFRESH = Partial refresh (~300-500ms)
  */
 static void ssd16xx_display_update(struct ssd16xx_panel *panel,
 				   u8 ctrl1_byte1, u8 ctrl1_byte2, u8 ctrl2_mode,
@@ -593,13 +611,15 @@ static void ssd16xx_clear_display(struct ssd16xx_panel *panel)
 
 	/*
 	 * Clear display with FULL REFRESH mode:
-	 * - Display Update Control 1 = 0x40 (bypass RED RAM)
-	 * - Display Update Control 2 = 0xF7 (full refresh, loads temperature + LUT)
+	 * - Display Update Control 1 = BYPASS_RED_RAM
+	 * - Display Update Control 2 = FULL_REFRESH (loads temperature + LUT)
 	 * - Uses LUTB/LUTW with 8 groups (32 phases) for clean baseline
 	 * - RED RAM not written since it's bypassed
 	 * - Update time: ~1.5-2s
 	 */
-	ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
+	ssd16xx_display_update(panel, SSD16XX_CTRL1_BYPASS_RED_RAM,
+			       SSD16XX_CTRL1_BYTE2_DEFAULT,
+			       SSD1683_CTRL2_FULL_REFRESH, &err);
 
 	if (err.errno_code)
 		drm_err(&panel->drm, "Clear display failed: %d\n", err.errno_code);
@@ -809,45 +829,53 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 		case SSD16XX_REFRESH_FULL:
 			/*
 			 * FULL REFRESH MODE:
-			 * - For BW panels: Control 1 = 0x40 (bypass RED RAM)
-			 * - For 3-color panels: Control 1 = 0x00 (enable RED RAM)
-			 * - Control 2 = 0xF7 (full refresh, loads temperature + LUT)
+			 * - For BW panels: Control 1 = BYPASS_RED_RAM
+			 * - For 3-color panels: Control 1 = NORMAL (enable RED RAM)
+			 * - Control 2 = FULL_REFRESH (loads temperature + LUT)
 			 * - Uses LUTB/LUTW with 8 groups (32 phases)
 			 * - Update time: ~1.5-2s
 			 */
 			if (panel->panel_cfg->red_supported) {
-				ssd16xx_display_update(panel, 0x00, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
+				ssd16xx_display_update(panel, SSD16XX_CTRL1_NORMAL,
+						       SSD16XX_CTRL1_BYTE2_DEFAULT,
+						       SSD1683_CTRL2_FULL_REFRESH, &err);
 				/* Write red component to RED RAM for 3-color panels */
 				ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
 				ssd16xx_send_data_bulk(panel, red_buffer, data_size, &err);
 			} else {
-				ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
+				ssd16xx_display_update(panel, SSD16XX_CTRL1_BYPASS_RED_RAM,
+						       SSD16XX_CTRL1_BYTE2_DEFAULT,
+						       SSD1683_CTRL2_FULL_REFRESH, &err);
 			}
 			break;
 
 		case SSD16XX_REFRESH_FAST:
 			/*
 			 * FAST REFRESH MODE:
-			 * - Control 1 = 0x40 (bypass RED RAM)
-			 * - Control 2 = 0xC7 (fast refresh, skip temperature load)
+			 * - Control 1 = BYPASS_RED_RAM
+			 * - Control 2 = FAST_REFRESH (skip temperature load)
 			 * - Uses LUTB/LUTW with 8 groups (32 phases)
 			 * - Temperature loaded once during hw_init
 			 * - Update time: ~1.0-1.5s
 			 */
-			ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FAST_REFRESH, &err);
+			ssd16xx_display_update(panel, SSD16XX_CTRL1_BYPASS_RED_RAM,
+					       SSD16XX_CTRL1_BYTE2_DEFAULT,
+					       SSD1683_CTRL2_FAST_REFRESH, &err);
 			break;
 
 		case SSD16XX_REFRESH_PARTIAL:
 		default:
 			/*
 			 * PARTIAL REFRESH MODE:
-			 * - Control 1 = 0x00 (both RAMs enabled for transitions)
-			 * - Control 2 = 0xFF (partial refresh, loads temperature + LUT)
+			 * - Control 1 = NORMAL (both RAMs enabled for transitions)
+			 * - Control 2 = PARTIAL_REFRESH (loads temperature + LUT)
 			 * - Uses LUTBB/LUTWB/LUTBW/LUTWW with 6 groups (24 phases)
 			 * - Update time: ~300-500ms
 			 * - Sync RED RAM after update for proper transitions
 			 */
-			ssd16xx_display_update(panel, 0x00, 0x00, SSD1683_CTRL2_PARTIAL_REFRESH, &err);
+			ssd16xx_display_update(panel, SSD16XX_CTRL1_NORMAL,
+					       SSD16XX_CTRL1_BYTE2_DEFAULT,
+					       SSD1683_CTRL2_PARTIAL_REFRESH, &err);
 			ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
 			ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
 			break;
@@ -856,14 +884,16 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 		/*
 		 * Baseline establishment: First FULL REFRESH after init
 		 * - Write to both BW RAM and RED RAM to establish baseline
-		 * - Display Update Control 1 = 0x40 (bypass RED RAM for now)
-		 * - Display Update Control 2 = 0xF7 (full refresh, loads temperature + LUT)
+		 * - Display Update Control 1 = BYPASS_RED_RAM
+		 * - Display Update Control 2 = FULL_REFRESH (loads temperature + LUT)
 		 * - Uses LUTB/LUTW with 8 groups (32 phases)
 		 * - Update time: ~1.5-2s
 		 */
 		ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
 		ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
-		ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
+		ssd16xx_display_update(panel, SSD16XX_CTRL1_BYPASS_RED_RAM,
+				       SSD16XX_CTRL1_BYTE2_DEFAULT,
+				       SSD1683_CTRL2_FULL_REFRESH, &err);
 	}
 
 	if (err.errno_code)

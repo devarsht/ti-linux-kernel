@@ -128,6 +128,16 @@ enum ssd16xx_model {
 };
 
 /*
+ * Refresh mode selection for atomic updates
+ * Can be configured via device tree property "refresh-mode"
+ */
+enum ssd16xx_refresh_mode {
+	SSD16XX_REFRESH_PARTIAL = 0,  /* Partial refresh (default for BW panels) */
+	SSD16XX_REFRESH_FULL,         /* Full refresh (default for 3-color panels) */
+	SSD16XX_REFRESH_FAST,         /* Fast refresh (skip temperature load) */
+};
+
+/*
  * Display modes and color support:
  *
  * The driver can operate in two display modes controlled by Display Update Control 2:
@@ -233,6 +243,7 @@ struct ssd16xx_panel {
 	u32 width;
 	u32 height;
 
+	enum ssd16xx_refresh_mode refresh_mode;  /* Configured via DT or defaults */
 	bool partial_mode_ready;
 	bool temperature_loaded;  /* Temperature LUT loaded for fast refresh */
 	bool initialized;
@@ -272,30 +283,36 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 /*
  * Refresh Mode Strategy (based on Seeed reference implementation):
  *
- * 1. FULL REFRESH MODE:
- *    - When: clear_display, baseline establishment
- *    - Control 1: 0x40 (bypass RED RAM)
+ * Configurable via device tree property "refresh-mode":
+ * - "partial" (default for BW panels)
+ * - "full" (default for 3-color panels)
+ * - "fast"
+ *
+ * 1. FULL REFRESH MODE (refresh-mode = "full"):
+ *    - Control 1: 0x40 for BW panels (bypass RED RAM), 0x00 for 3-color (enable RED RAM)
  *    - Control 2: 0xF7 (full refresh, loads temperature + LUT)
  *    - LUTs: LUTB/LUTW (8 groups × 4 phases = 32 phases)
  *    - Quality: Best, no ghosting
  *    - Time: ~1.5-2s
+ *    - Use: When highest quality needed, can show red on 3-color panels
  *
- * 2. FAST REFRESH MODE:
- *    - When: Frequent updates on panels without red support
+ * 2. FAST REFRESH MODE (refresh-mode = "fast"):
  *    - Control 1: 0x40 (bypass RED RAM)
- *    - Control 2: 0xC7 (fast refresh, uses existing temperature/LUT)
+ *    - Control 2: 0xC7 (fast refresh, uses existing temperature/LUT from init)
  *    - LUTs: LUTB/LUTW (8 groups × 4 phases = 32 phases)
  *    - Quality: Good
  *    - Time: ~1.0-1.5s (skips temperature load)
- *    - Requires: Temperature loaded once during hw_init
+ *    - Use: When faster updates needed without temperature reload
  *
- * 3. PARTIAL REFRESH MODE:
- *    - When: Frequent updates on 3-color panels
+ * 3. PARTIAL REFRESH MODE (refresh-mode = "partial"):
  *    - Control 1: 0x00 (both RAMs enabled for transitions)
  *    - Control 2: 0xFF (partial refresh, loads temperature + LUT)
  *    - LUTs: LUTBB/LUTWB/LUTBW/LUTWW (6 groups × 4 phases = 24 phases)
  *    - Quality: Good, minor ghosting
  *    - Time: ~300-500ms
+ *    - Use: When fastest updates needed, BW panels default
+ *
+ * Special case: pipe_enable (clear display) always uses FULL REFRESH with RED RAM bypass
  */
 
 /* BUSY pin is ACTIVE HIGH: 1=busy, 0=ready */
@@ -693,38 +710,54 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 
 	if (panel->partial_mode_ready) {
 		/*
-		 * Subsequent updates: Choose refresh mode based on panel capability
+		 * Atomic updates: Use configured refresh mode from device tree
 		 */
-		if (!panel->panel_cfg->red_supported) {
+		switch (panel->refresh_mode) {
+		case SSD16XX_REFRESH_FULL:
 			/*
-			 * FAST REFRESH MODE (BW panels):
-			 * - Display Update Control 1 = 0x40 (bypass RED RAM)
-			 * - Display Update Control 2 = 0xC7 (fast refresh, skip temperature load)
+			 * FULL REFRESH MODE:
+			 * - For BW panels: Control 1 = 0x40 (bypass RED RAM)
+			 * - For 3-color panels: Control 1 = 0x00 (enable RED RAM)
+			 * - Control 2 = 0xF7 (full refresh, loads temperature + LUT)
+			 * - Uses LUTB/LUTW with 8 groups (32 phases)
+			 * - Update time: ~1.5-2s
+			 */
+			if (panel->panel_cfg->red_supported) {
+				ssd16xx_display_update(panel, 0x00, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
+				/* Sync RED RAM for 3-color panels */
+				ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
+				ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
+			} else {
+				ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
+			}
+			break;
+
+		case SSD16XX_REFRESH_FAST:
+			/*
+			 * FAST REFRESH MODE:
+			 * - Control 1 = 0x40 (bypass RED RAM)
+			 * - Control 2 = 0xC7 (fast refresh, skip temperature load)
 			 * - Uses LUTB/LUTW with 8 groups (32 phases)
 			 * - Temperature loaded once during hw_init
 			 * - Update time: ~1.0-1.5s
 			 */
 			ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FAST_REFRESH, &err);
-		} else {
+			break;
+
+		case SSD16XX_REFRESH_PARTIAL:
+		default:
 			/*
-			 * PARTIAL REFRESH MODE (3-color panels):
-			 * - Display Update Control 1 = 0x00 (both RAMs enabled)
-			 * - Display Update Control 2 = 0xFF (partial refresh, loads temperature + LUT)
+			 * PARTIAL REFRESH MODE:
+			 * - Control 1 = 0x00 (both RAMs enabled for transitions)
+			 * - Control 2 = 0xFF (partial refresh, loads temperature + LUT)
 			 * - Uses LUTBB/LUTWB/LUTBW/LUTWW with 6 groups (24 phases)
 			 * - Update time: ~300-500ms
+			 * - Sync RED RAM after update for proper transitions
 			 */
 			ssd16xx_display_update(panel, 0x00, 0x00, SSD1683_CTRL2_PARTIAL_REFRESH, &err);
-		}
-
-		/*
-		 * Sync RED RAM with new image to maintain baseline for next differential.
-		 * This prevents ghosting by ensuring the next partial refresh compares
-		 * against the current image, not a stale baseline.
-		 * Only needed for partial refresh mode (3-color panels).
-		 */
-		if (panel->panel_cfg->red_supported) {
 			ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
 			ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
+			break;
 		}
 	} else {
 		/*
@@ -885,6 +918,7 @@ static int ssd16xx_probe(struct spi_device *spi)
 	const struct spi_device_id *spi_id;
 	const struct drm_display_mode *mode;
 	const void *match;
+	const char *refresh_mode_str;
 	enum ssd16xx_model model;
 	int ret;
 
@@ -962,6 +996,31 @@ static int ssd16xx_probe(struct spi_device *spi)
 	panel->mode = mode;
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
+
+	/* Parse refresh mode from device tree */
+	ret = device_property_read_string(dev, "refresh-mode", &refresh_mode_str);
+	if (ret == 0) {
+		if (strcmp(refresh_mode_str, "full") == 0) {
+			panel->refresh_mode = SSD16XX_REFRESH_FULL;
+		} else if (strcmp(refresh_mode_str, "fast") == 0) {
+			panel->refresh_mode = SSD16XX_REFRESH_FAST;
+		} else if (strcmp(refresh_mode_str, "partial") == 0) {
+			panel->refresh_mode = SSD16XX_REFRESH_PARTIAL;
+		} else {
+			drm_warn(drm, "Invalid refresh-mode '%s', using default\n", refresh_mode_str);
+			/* Fall through to default */
+			panel->refresh_mode = panel->panel_cfg->red_supported ?
+					      SSD16XX_REFRESH_FULL : SSD16XX_REFRESH_PARTIAL;
+		}
+	} else {
+		/* Default: partial for BW panels, full for 3-color panels */
+		panel->refresh_mode = panel->panel_cfg->red_supported ?
+				      SSD16XX_REFRESH_FULL : SSD16XX_REFRESH_PARTIAL;
+	}
+
+	drm_info(drm, "Using %s refresh mode\n",
+		 panel->refresh_mode == SSD16XX_REFRESH_FULL ? "full" :
+		 panel->refresh_mode == SSD16XX_REFRESH_FAST ? "fast" : "partial");
 
 	/* Get GPIOs - reset starts HIGH (inactive), DC starts LOW */
 	panel->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);

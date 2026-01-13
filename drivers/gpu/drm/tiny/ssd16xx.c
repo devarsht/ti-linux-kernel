@@ -13,6 +13,7 @@
 
 #include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/property.h>
 #include <linux/spi/spi.h>
 
@@ -34,7 +35,9 @@
 #define SSD16XX_CMD_DEEP_SLEEP_MODE			0x10
 #define SSD16XX_CMD_DATA_ENTRY_MODE			0x11
 #define SSD16XX_CMD_SW_RESET				0x12
-#define SSD16XX_CMD_TEMPERATURE_SENSOR_CONTROL		0x1A
+#define SSD16XX_CMD_TEMPERATURE_SENSOR_CONTROL		0x18
+#define SSD16XX_CMD_WRITE_TEMP_REGISTER			0x1A
+#define SSD16XX_CMD_READ_TEMP_REGISTER			0x1B
 #define SSD16XX_CMD_MASTER_ACTIVATION			0x20
 #define SSD16XX_CMD_DISPLAY_UPDATE_CONTROL1		0x21
 #define SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2		0x22
@@ -48,10 +51,68 @@
 
 #define SSD16XX_SLEEP_MODE_1				0x01
 
-/* SSD1683 Display update modes - from Good Display / Waveshare reference */
-#define SSD1683_DISPLAY_MODE_FULL			0xF7  /* Full refresh ~2s */
-#define SSD1683_DISPLAY_MODE_FAST			0xC7  /* Fast refresh ~1.5s */
-#define SSD1683_DISPLAY_MODE_PARTIAL			0xFF  /* Partial refresh ~300ms */
+/* Display Update Control 2 (0x22) bit definitions - from SSD1683 datasheet */
+#define SSD16XX_CTRL2_ENABLE_CLK			BIT(7)  /* Enable clock signal */
+#define SSD16XX_CTRL2_ENABLE_ANALOG			BIT(6)  /* Enable analog */
+#define SSD16XX_CTRL2_LOAD_TEMPERATURE			BIT(5)  /* Load temperature value */
+#define SSD16XX_CTRL2_LOAD_LUT				BIT(4)  /* Load LUT with DISPLAY Mode 1 */
+#define SSD16XX_CTRL2_MODE2				BIT(3)  /* Display Mode 2 */
+#define SSD16XX_CTRL2_DISPLAY  				BIT(2)  /* Display Mode 1 */
+#define SSD16XX_CTRL2_DISABLE_ANALOG			BIT(1)  /* Disable analog */
+#define SSD16XX_CTRL2_DISABLE_CLK			BIT(0)  /* Disable clock signal */
+
+/*
+ * Display Update Control 2 (0x22) refresh mode definitions
+ *
+ * Three refresh modes based on Seeed reference implementation:
+ *
+ * 1. Full Refresh Mode (0xF7):
+ *    - 3-color mode (bit 3 = 0)
+ *    - Loads temperature and LUT on every update
+ *    - Uses LUTB/LUTW (8 groups × 4 phases = 32 phases)
+ *    - Best quality, ~1.5-2s update time
+ *    - Use for: Initial clear, baseline establishment, 3-color panels
+ *
+ * 2. Fast Refresh Mode (0xC7):
+ *    - 3-color mode (bit 3 = 0)
+ *    - Does NOT load temperature or LUT (uses existing from init)
+ *    - Uses LUTB/LUTW (8 groups × 4 phases = 32 phases)
+ *    - Good quality, faster than full refresh
+ *    - Use for: Frequent updates when temperature stable
+ *
+ * 3. Partial Refresh Mode (0xFF):
+ *    - BW mode (bit 3 = 1)
+ *    - Loads temperature and LUT on every update
+ *    - Uses LUTBB/LUTWB/LUTBW/LUTWW (6 groups × 4 phases = 24 phases)
+ *    - Fastest, ~300-500ms update time
+ *    - Use for: Frequent updates on BW panels
+ */
+
+/* Full refresh: 3-color mode with temperature and LUT load */
+#define SSD1683_CTRL2_FULL_REFRESH (SSD16XX_CTRL2_ENABLE_CLK | \
+				    SSD16XX_CTRL2_ENABLE_ANALOG | \
+				    SSD16XX_CTRL2_LOAD_TEMPERATURE | \
+				    SSD16XX_CTRL2_LOAD_LUT | \
+				    SSD16XX_CTRL2_DISPLAY | \
+				    SSD16XX_CTRL2_DISABLE_ANALOG | \
+				    SSD16XX_CTRL2_DISABLE_CLK)  /* 0xF7 */
+
+/* Fast refresh: 3-color mode without temperature/LUT load */
+#define SSD1683_CTRL2_FAST_REFRESH (SSD16XX_CTRL2_ENABLE_CLK | \
+				    SSD16XX_CTRL2_ENABLE_ANALOG | \
+				    SSD16XX_CTRL2_DISPLAY | \
+				    SSD16XX_CTRL2_DISABLE_ANALOG | \
+				    SSD16XX_CTRL2_DISABLE_CLK)  /* 0xC7 */
+
+/* Partial refresh: BW mode with temperature and LUT load */
+#define SSD1683_CTRL2_PARTIAL_REFRESH (SSD16XX_CTRL2_ENABLE_CLK | \
+				       SSD16XX_CTRL2_ENABLE_ANALOG | \
+				       SSD16XX_CTRL2_LOAD_TEMPERATURE | \
+				       SSD16XX_CTRL2_LOAD_LUT | \
+				       SSD16XX_CTRL2_MODE2 | \
+				       SSD16XX_CTRL2_DISPLAY | \
+				       SSD16XX_CTRL2_DISABLE_ANALOG | \
+				       SSD16XX_CTRL2_DISABLE_CLK)  /* 0xFF */
 
 #define SSD16XX_SPI_BITS_PER_WORD			8
 #define SSD16XX_SPI_SPEED_DEFAULT			1000000
@@ -66,17 +127,54 @@ enum ssd16xx_model {
 	GDEY042T81 = 1,
 };
 
+/*
+ * Display modes and color support:
+ *
+ * The driver can operate in two display modes controlled by Display Update Control 2:
+ *
+ * Black/White mode (0xFF):
+ *   - BW RAM contains the display data
+ *   - RED RAM contains baseline for partial refresh transitions
+ *   - Display Update Control 1 can bypass RED RAM (0x40) for full refresh
+ *   - Uses 5 LUTs: LUTC, LUTBB, LUTWB, LUTBW, LUTWW (transition tables)
+ *   - Suitable for: BW panels, or 3-color panels displaying only BW
+ *
+ * 3-Color mode (0xF7):
+ *   - Both RED RAM and BW RAM are actively read for EVERY update
+ *   - RAM bit combination determines color:
+ *     RED=0, BW=0 → Black (LUTB)
+ *     RED=0, BW=1 → White (LUTW)
+ *     RED=1, BW=0 → Red (LUTR)
+ *   - Display Update Control 1 MUST enable both RAMs (0x00)
+ *   - Uses 4 LUTs: LUTC, LUTR, LUTW, LUTB (color selection tables)
+ *   - Suitable for: 3-color panels displaying red, or BW panels for full refresh
+ *
+ * Panel capability vs display mode:
+ * - BW panels: Can use BW mode (0xFF) or 3-color mode (0xF7) for better quality
+ * - 3-color panels: Can use 3-color mode (0xF7) or BW mode (0xFF) to suppress red
+ *
+ * See SSD1683_LUT_EXPLANATION.md for complete details.
+ */
+
 struct ssd16xx_controller_config {
 	u16 max_width;
 	u16 max_height;
 	u8 ram_x_address_bits;  /* Width of X RAM address parameter: 8 or 16 bits */
 	u8 ram_y_address_bits;  /* Width of Y RAM address parameter: 8 or 16 bits */
-	u8 full_refresh_mode;
-	u8 fast_refresh_mode;
-	u8 partial_refresh_mode;
 };
 
 struct ssd16xx_panel_config {
+	/*
+	 * Panel hardware capability: Does this panel support red color?
+	 * - true: 3-color panel (red/yellow/black/white)
+	 * - false: 2-color panel (black/white only)
+	 *
+	 * Note: This indicates hardware capability, not current display mode.
+	 * A 3-color panel can display in BW mode (red suppressed).
+	 * A BW panel can use 3-color mode (0xF7) for better full refresh quality.
+	 */
+	bool red_supported;
+
 	/* Data Entry Mode - controls X/Y increment direction */
 	u8 data_entry_mode;
 
@@ -87,9 +185,21 @@ struct ssd16xx_panel_config {
 	u8 border_waveform_init;
 	u8 border_waveform_partial;
 
-	/* Display Update Control 1 */
+	/*
+	 * Display Update Control 1 (command 0x21)
+	 *
+	 * Byte 0 controls RED RAM and BW RAM usage:
+	 *   Bits[7:4] - RED RAM option: 0x0=Normal, 0x4=Bypass, 0x8=Inverse
+	 *   Bits[3:0] - BW RAM option:  0x0=Normal, 0x4=Bypass, 0x8=Inverse
+	 *
+	 * For BW mode panels:
+	 *   init:    0x40 - Bypass RED RAM during initialization (RED RAM undefined)
+	 *   partial: 0x00 - Use both RAMs for transition-based updates
+	 * For 3-color panels:
+	 *   init:    0x00 - Enable both RAMs (required for red pixels)
+	 *   partial: 0x00 - Always use both RAMs
+	 */
 	u8 display_update_ctrl1_init[2];
-	u8 display_update_ctrl1_normal;
 	u8 display_update_ctrl1_partial[2];
 
 	/* Temperature Sensor Control */
@@ -124,6 +234,7 @@ struct ssd16xx_panel {
 	u32 height;
 
 	bool partial_mode_ready;
+	bool temperature_loaded;  /* Temperature LUT loaded for fast refresh */
 	bool initialized;
 };
 
@@ -138,21 +249,18 @@ static const struct ssd16xx_controller_config ssd16xx_controller_configs[] = {
 		.max_height = 300,
 		.ram_x_address_bits = 8,
 		.ram_y_address_bits = 16,
-		.full_refresh_mode = SSD1683_DISPLAY_MODE_FULL,
-		.fast_refresh_mode = SSD1683_DISPLAY_MODE_FAST,
-		.partial_refresh_mode = SSD1683_DISPLAY_MODE_PARTIAL,
 	},
 };
 
 /* Experimental values based on panel & controller datasheet and references as shared in header */
 static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 	[GDEY042T81] = {
+		.red_supported = false,  /* 2-color panel: black/white only */
 		.data_entry_mode = 0x03,  /* Y increment, X increment */
 		.driver_output_ctrl_byte3 = 0x00,
 		.border_waveform_init = 0x05,
 		.border_waveform_partial = 0x80,
 		.display_update_ctrl1_init = { 0x40, 0x00 },
-		.display_update_ctrl1_normal = 0x40,
 		.display_update_ctrl1_partial = { 0x00, 0x00 },
 		.temp_sensor_control = 0x6E,
 		.temp_load_sequence = 0x91,
@@ -161,13 +269,42 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 	},
 };
 
+/*
+ * Refresh Mode Strategy (based on Seeed reference implementation):
+ *
+ * 1. FULL REFRESH MODE:
+ *    - When: clear_display, baseline establishment
+ *    - Control 1: 0x40 (bypass RED RAM)
+ *    - Control 2: 0xF7 (full refresh, loads temperature + LUT)
+ *    - LUTs: LUTB/LUTW (8 groups × 4 phases = 32 phases)
+ *    - Quality: Best, no ghosting
+ *    - Time: ~1.5-2s
+ *
+ * 2. FAST REFRESH MODE:
+ *    - When: Frequent updates on panels without red support
+ *    - Control 1: 0x40 (bypass RED RAM)
+ *    - Control 2: 0xC7 (fast refresh, uses existing temperature/LUT)
+ *    - LUTs: LUTB/LUTW (8 groups × 4 phases = 32 phases)
+ *    - Quality: Good
+ *    - Time: ~1.0-1.5s (skips temperature load)
+ *    - Requires: Temperature loaded once during hw_init
+ *
+ * 3. PARTIAL REFRESH MODE:
+ *    - When: Frequent updates on 3-color panels
+ *    - Control 1: 0x00 (both RAMs enabled for transitions)
+ *    - Control 2: 0xFF (partial refresh, loads temperature + LUT)
+ *    - LUTs: LUTBB/LUTWB/LUTBW/LUTWW (6 groups × 4 phases = 24 phases)
+ *    - Quality: Good, minor ghosting
+ *    - Time: ~300-500ms
+ */
+
 /* BUSY pin is ACTIVE HIGH: 1=busy, 0=ready */
 static void ssd16xx_wait_for_panel(struct ssd16xx_panel *panel)
 {
 	unsigned int timeout_ms = 10000;
 	unsigned long timeout_jiffies = jiffies + msecs_to_jiffies(timeout_ms);
-	int busy_val;
 	unsigned long start_ms = jiffies_to_msecs(jiffies);
+	int busy_val;
 
 	busy_val = gpiod_get_value_cansleep(panel->busy);
 	drm_dbg(&panel->drm, "BUSY initial value: %d\n", busy_val);
@@ -178,7 +315,7 @@ static void ssd16xx_wait_for_panel(struct ssd16xx_panel *panel)
 
 			elapsed_ms = jiffies_to_msecs(jiffies) - start_ms;
 			drm_err(&panel->drm,
-				"Busy wait timed out after %lums (BUSY still HIGH)\n",
+				"Busy wait timed out after %lums\n",
 				elapsed_ms);
 			return;
 		}
@@ -240,6 +377,7 @@ static void ssd16xx_send_data(struct ssd16xx_panel *panel, u8 data,
 	ssd16xx_spi_sync(panel->spi, &msg, err);
 }
 
+
 static void ssd16xx_send_x_param(struct ssd16xx_panel *panel, u16 x,
 				 struct ssd16xx_error_ctx *err)
 {
@@ -292,14 +430,19 @@ static void ssd16xx_send_data_bulk(struct ssd16xx_panel *panel,
 }
 
 /*
- * Trigger display update
- * Based on Good Display / Waveshare reference implementation
- * mode: 0xF7 = full refresh (~2s)
- *       0xC7 = fast refresh (~1.5s)
- *       0xFF = partial refresh (~0.3s)
+ * Trigger display update with Display Update Control configuration
+ *
+ * @ctrl1_byte1: Display Update Control 1 byte 1
+ *               0x00 = Normal (both RAMs enabled)
+ *               0x40 = Bypass RED RAM
+ * @ctrl1_byte2: Display Update Control 1 byte 2 (usually 0x00)
+ * @ctrl2_mode: Display Update Control 2 mode
+ *              0xF7 = 3-color mode (full refresh, ~2s)
+ *              0xFF = BW mode (partial refresh, ~0.3s)
  */
 static void ssd16xx_display_update(struct ssd16xx_panel *panel,
-				   u8 mode, struct ssd16xx_error_ctx *err)
+				   u8 ctrl1_byte1, u8 ctrl1_byte2, u8 ctrl2_mode,
+				   struct ssd16xx_error_ctx *err)
 {
 	int busy_before;
 
@@ -308,11 +451,17 @@ static void ssd16xx_display_update(struct ssd16xx_panel *panel,
 	ssd16xx_wait_for_panel(panel);
 
 	busy_before = gpiod_get_value_cansleep(panel->busy);
-	drm_dbg(&panel->drm, "display_update: Sending update mode 0x%02x (BUSY=%d)\n",
-		mode, busy_before);
+	drm_dbg(&panel->drm, "display_update: Setting ctrl1=0x%02x,0x%02x mode=0x%02x (BUSY=%d)\n",
+		ctrl1_byte1, ctrl1_byte2, ctrl2_mode, busy_before);
 
+	/* Set Display Update Control 1 */
+	ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL1, err);
+	ssd16xx_send_data(panel, ctrl1_byte1, err);
+	ssd16xx_send_data(panel, ctrl1_byte2, err);
+
+	/* Set Display Update Control 2 and activate */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2, err);
-	ssd16xx_send_data(panel, mode, err);
+	ssd16xx_send_data(panel, ctrl2_mode, err);
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_MASTER_ACTIVATION, err);
 
 	busy_before = gpiod_get_value_cansleep(panel->busy);
@@ -343,23 +492,32 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 	ssd16xx_send_y_param(panel, panel->height - 1, &err);
 	ssd16xx_send_data(panel, panel->panel_cfg->driver_output_ctrl_byte3, &err);
 
-	/* Display update control 1 */
-	ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL1, &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->display_update_ctrl1_init[0], &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->display_update_ctrl1_init[1], &err);
-
+	/* Border waveform control */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_BORDER_WAVEFORM_CONTROL, &err);
 	ssd16xx_send_data(panel, panel->panel_cfg->border_waveform_init, &err);
 
-	/* Temperature sensor control */
+	/*
+	 * Temperature Sensor Selection: Configure controller to use
+	 * internal temperature sensor and automatically select optimal
+	 * waveform from OTP based on measured temperature.
+	 */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_TEMPERATURE_SENSOR_CONTROL, &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->temp_sensor_control, &err);
+	ssd16xx_send_data(panel, panel->panel_cfg->temp_sensor_update, &err);
 
-	/* Load temperature - required activation sequence */
-	ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2, &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->temp_load_sequence, &err);
-	ssd16xx_send_cmd(panel, SSD16XX_CMD_MASTER_ACTIVATION, &err);
-	ssd16xx_wait_for_panel(panel);
+	/*
+	 * For FAST refresh mode, load temperature and LUT once during initialization.
+	 * Fast mode (0xC7) skips temperature load on each update for speed.
+	 * FULL (0xF7) and PARTIAL (0xFF) modes load temperature on every update,
+	 * so pre-loading here is unnecessary for those modes.
+	 * Uses sequence 0x91: Load temperature without display update.
+	 */
+	if (panel->refresh_mode == SSD16XX_REFRESH_FAST) {
+		ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2, &err);
+		ssd16xx_send_data(panel, panel->panel_cfg->temp_load_sequence, &err);
+		ssd16xx_send_cmd(panel, SSD16XX_CMD_MASTER_ACTIVATION, &err);
+		ssd16xx_wait_for_panel(panel);
+		panel->temperature_loaded = true;
+	}
 
 	/* Data entry mode */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_DATA_ENTRY_MODE, &err);
@@ -369,8 +527,8 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 	ssd16xx_send_x_param(panel, (panel->width / 8) - 1, &err);
 
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_SET_RAM_Y_ADDRESS_START_END, &err);
-	ssd16xx_send_y_param(panel, 0x00, &err);  /* Start = 0 */
-	ssd16xx_send_y_param(panel, panel->height - 1, &err);  /* End = HEIGHT-1 */
+	ssd16xx_send_y_param(panel, 0x00, &err);
+	ssd16xx_send_y_param(panel, panel->height - 1, &err);
 
 	/* Set initial cursor position */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_SET_RAM_X_ADDRESS_COUNTER, &err);
@@ -387,7 +545,10 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 		return err.errno_code;
 	}
 
-	panel->partial_mode_ready = true;
+	/*
+	 * Note: partial_mode_ready is NOT set here. It will be set after
+	 * the first full refresh establishes a baseline in RED RAM.
+	 */
 	return 0;
 }
 
@@ -413,10 +574,15 @@ static void ssd16xx_clear_display(struct ssd16xx_panel *panel)
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_BW, &err);
 	ssd16xx_send_data_bulk(panel, white_buffer, data_size, &err);
 
-	/* Write white to RED RAM (SSD16xx compares BW/RED RAM for waveforms) */
-	ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
-	ssd16xx_send_data_bulk(panel, white_buffer, data_size, &err);
-	ssd16xx_display_update(panel, panel->controller_cfg->full_refresh_mode, &err);
+	/*
+	 * Clear display with FULL REFRESH mode:
+	 * - Display Update Control 1 = 0x40 (bypass RED RAM)
+	 * - Display Update Control 2 = 0xF7 (full refresh, loads temperature + LUT)
+	 * - Uses LUTB/LUTW with 8 groups (32 phases) for clean baseline
+	 * - RED RAM not written since it's bypassed
+	 * - Update time: ~1.5-2s
+	 */
+	ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
 
 	if (err.errno_code)
 		drm_err(&panel->drm, "Clear display failed: %d\n", err.errno_code);
@@ -424,25 +590,11 @@ static void ssd16xx_clear_display(struct ssd16xx_panel *panel)
 	kfree(white_buffer);
 }
 
-/*
- * Prepare for partial refresh
- * Based on Good Display GDEY042T81 EPD_Dis_Part()
- * Must be called before using 0xFF partial refresh mode
- */
-static void ssd16xx_prepare_partial_refresh(struct ssd16xx_panel *panel)
-{
-	struct ssd16xx_error_ctx err = { .errno_code = 0 };
-
-	ssd16xx_send_cmd(panel, SSD16XX_CMD_BORDER_WAVEFORM_CONTROL, &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->border_waveform_partial, &err);
-	ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL1, &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->display_update_ctrl1_partial[0], &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->display_update_ctrl1_partial[1], &err);
-}
 
 /*
  * Convert XRGB8888 framebuffer to 1-bit monochrome
  * Uses luminance threshold: (0.299*R + 0.587*G + 0.114*B) > 127
+ * Optimized: Compare (299*R + 587*G + 114*B) > 127000 to avoid division
  */
 static void ssd16xx_convert_fb_to_1bpp(u8 *dst, struct iosys_map *src,
 				       struct drm_framebuffer *fb,
@@ -463,11 +615,16 @@ static void ssd16xx_convert_fb_to_1bpp(u8 *dst, struct iosys_map *src,
 			u8 g = (pixel >> 8) & 0xFF;
 			u8 b = pixel & 0xFF;
 
-			/* Calculate luminance using standard coefficients */
-			unsigned int luma = (299 * r + 587 * g + 114 * b) / 1000;
+			/*
+			 * Calculate luminance using ITU-R BT.601 coefficients:
+			 * Y = 0.299*R + 0.587*G + 0.114*B
+			 * Threshold at 127, scaled by 1000 to avoid division:
+			 * (299*R + 587*G + 114*B) > 127000
+			 */
+			unsigned int luma_scaled = 299 * r + 587 * g + 114 * b;
 
-			/* Threshold: >127 = white (1), <=127 = black (0) */
-			if (luma > 127)
+			/* Threshold: >127000 = white (1), <=127000 = black (0) */
+			if (luma_scaled > 127000)
 				byte |= (1 << (7 - bit_pos));
 
 			bit_pos++;
@@ -502,53 +659,85 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 
 	iosys_map_set_vaddr(&map, dma_obj->vaddr);
 
-	/* For now, always update entire display (e-ink can't do partial efficiently) */
-	rect->x1 = 0;
-	rect->y1 = 0;
-	rect->x2 = panel->width;
-	rect->y2 = panel->height;
+	/*
+	 * Use damage tracking for partial updates when available.
+	 * Align rect to byte boundaries (8 pixels) for 1bpp conversion.
+	 */
+	if (panel->partial_mode_ready) {
+		rect->x1 = ALIGN_DOWN(rect->x1, 8);
+		rect->x2 = ALIGN(rect->x2, 8);
+		drm_dbg(&panel->drm, "Partial update: (%d,%d) to (%d,%d)\n",
+			rect->x1, rect->y1, rect->x2, rect->y2);
+	} else {
+		/* Full display update during initialization */
+		rect->x1 = 0;
+		rect->y1 = 0;
+		rect->x2 = panel->width;
+		rect->y2 = panel->height;
+		drm_dbg(&panel->drm, "Full display update: %dx%d\n",
+			panel->width, panel->height);
+	}
 
-	drm_dbg(&panel->drm, "  Converting %dx%d framebuffer to 1bpp\n",
-		panel->width, panel->height);
 	ssd16xx_convert_fb_to_1bpp(mono_buffer, &map, fb, rect);
 
-	/* Reset RAM address counters to start position */
+	/* Set RAM address counters to start position */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_SET_RAM_X_ADDRESS_COUNTER, &err);
 	ssd16xx_send_x_param(panel, 0x00, &err);
 
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_SET_RAM_Y_ADDRESS_COUNTER, &err);
 	ssd16xx_send_y_param(panel, 0x00, &err);
 
-	/*
-	 * Write to current frame RAM (BW)
-	 */
+	/* Write to BW RAM (current frame) */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_BW, &err);
 	ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
 
-	/*
-	 * Choose refresh mode based on initialization state
-	 * After baseline is established in RED RAM, we can use faster partial refresh
-	 */
 	if (panel->partial_mode_ready) {
 		/*
-		 * Partial refresh mode: ~300ms update time - FASTEST
-		 * Only write to BW RAM (new frame)
-		 * RED RAM keeps baseline - controller compares to find changes
-		 * This is the fastest mode but may accumulate ghosting over time
-		 * Requires RED RAM to have been initialized with baseline image
+		 * Subsequent updates: Choose refresh mode based on panel capability
 		 */
-		ssd16xx_prepare_partial_refresh(panel);
-		ssd16xx_display_update(panel, panel->controller_cfg->partial_refresh_mode, &err);
+		if (!panel->panel_cfg->red_supported) {
+			/*
+			 * FAST REFRESH MODE (BW panels):
+			 * - Display Update Control 1 = 0x40 (bypass RED RAM)
+			 * - Display Update Control 2 = 0xC7 (fast refresh, skip temperature load)
+			 * - Uses LUTB/LUTW with 8 groups (32 phases)
+			 * - Temperature loaded once during hw_init
+			 * - Update time: ~1.0-1.5s
+			 */
+			ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FAST_REFRESH, &err);
+		} else {
+			/*
+			 * PARTIAL REFRESH MODE (3-color panels):
+			 * - Display Update Control 1 = 0x00 (both RAMs enabled)
+			 * - Display Update Control 2 = 0xFF (partial refresh, loads temperature + LUT)
+			 * - Uses LUTBB/LUTWB/LUTBW/LUTWW with 6 groups (24 phases)
+			 * - Update time: ~300-500ms
+			 */
+			ssd16xx_display_update(panel, 0x00, 0x00, SSD1683_CTRL2_PARTIAL_REFRESH, &err);
+		}
+
+		/*
+		 * Sync RED RAM with new image to maintain baseline for next differential.
+		 * This prevents ghosting by ensuring the next partial refresh compares
+		 * against the current image, not a stale baseline.
+		 * Only needed for partial refresh mode (3-color panels).
+		 */
+		if (panel->panel_cfg->red_supported) {
+			ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
+			ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
+		}
 	} else {
-		/* TODO: Add a sysfs hook to select fast refresh mode
-		 * Fast refresh mode: ~1.5s update time - SLOWER
-		 * Write same data to BOTH BW RAM (new) and RED RAM (baseline)
-		 * This establishes the baseline needed for subsequent partial refreshes
-		 * Used during initialization or when partial mode initialization failed
+		/*
+		 * Baseline establishment: First FULL REFRESH after init
+		 * - Write to both BW RAM and RED RAM to establish baseline
+		 * - Display Update Control 1 = 0x40 (bypass RED RAM for now)
+		 * - Display Update Control 2 = 0xF7 (full refresh, loads temperature + LUT)
+		 * - Uses LUTB/LUTW with 8 groups (32 phases)
+		 * - Update time: ~1.5-2s
 		 */
 		ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
 		ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
-		ssd16xx_display_update(panel, panel->controller_cfg->fast_refresh_mode, &err);
+		ssd16xx_display_update(panel, 0x40, 0x00, SSD1683_CTRL2_FULL_REFRESH, &err);
 	}
 
 	if (err.errno_code)
@@ -595,7 +784,20 @@ static void ssd16xx_pipe_enable(struct drm_simple_display_pipe *pipe,
 		goto out_exit;
 	}
 
+	/*
+	 * First full refresh: Clears display and establishes baseline.
+	 * This writes to both BW and RED RAM, setting up the baseline
+	 * needed for subsequent partial refresh operations.
+	 */
 	ssd16xx_clear_display(panel);
+
+	/*
+	 * Mark partial mode as ready. From this point, fb_dirty() will
+	 * use partial refresh (~300ms) instead of full refresh (~2s).
+	 * Display Update Control 1 will be set appropriately in each
+	 * display_update call (0x00 for partial, 0x40 for full refresh).
+	 */
+	panel->partial_mode_ready = true;
 	panel->initialized = true;
 
 out_exit:
@@ -694,9 +896,13 @@ static int ssd16xx_probe(struct spi_device *spi)
 		model = (enum ssd16xx_model)spi_id->driver_data;
 	}
 
-	/* The SPI device is used to allocate DMA memory for fbdev */
+	/*
+	 * The SPI device is used to allocate DMA memory for fbdev.
+	 * Use DMA_BIT_MASK(64) instead of restrictive 32-bit mask.
+	 * The DMA subsystem will handle address limitations automatically.
+	 */
 	if (!dev->coherent_dma_mask) {
-		ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(32));
+		ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(64));
 		if (ret) {
 			dev_warn(dev, "Failed to set DMA mask: %d\n", ret);
 			return ret;
@@ -712,6 +918,7 @@ static int ssd16xx_probe(struct spi_device *spi)
 	panel->spi = spi;
 	panel->model = model;
 	spi_set_drvdata(spi, panel);
+
 	spi->mode = SPI_MODE_0;
 	spi->bits_per_word = SSD16XX_SPI_BITS_PER_WORD;
 

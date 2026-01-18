@@ -536,13 +536,42 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 	 * Fast mode (0xC7) skips temperature load on each update for speed.
 	 * FULL (0xF7) and PARTIAL (0xFF) modes load temperature on every update,
 	 * so pre-loading here is unnecessary for those modes.
-	 * Uses sequence 0x91: Load temperature without display update.
+	 *
+	 * CRITICAL: Must set Display Update Control 1 BEFORE loading temperature.
+	 * This sequence matches Seeed GDEY042T81 reference implementation
+	 * (EPD_HW_Init_Fast() and EPD_HW_Init_Fast2()).
 	 */
 	if (panel->refresh_mode == SSD16XX_REFRESH_FAST) {
+		/*
+		 * Display Update Control 1: Configure RAM usage.
+		 * Value 0x40 = BYPASS_RED_RAM (force RED RAM to 0).
+		 * Must be set before temperature load to define controller behavior.
+		 */
+		ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL1, &err);
+		ssd16xx_send_data(panel, SSD16XX_CTRL1_BYPASS_RED_RAM, &err);
+		ssd16xx_send_data(panel, SSD16XX_CTRL1_BYTE2_DEFAULT, &err);
+
+		/*
+		 * Write temperature value to register.
+		 * Controller uses this for optimal LUT selection.
+		 */
+		ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_TEMP_REGISTER, &err);
+		ssd16xx_send_data(panel, panel->panel_cfg->temp_sensor_control, &err);
+
+		/*
+		 * Display Update Control 2: Load temperature and LUT (0x91).
+		 * This loads temperature without triggering display update.
+		 */
 		ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2, &err);
 		ssd16xx_send_data(panel, panel->panel_cfg->temp_load_sequence, &err);
+
+		/*
+		 * Master Activation: Execute the temperature/LUT load operation.
+		 * Wait for BUSY to go low (operation complete).
+		 */
 		ssd16xx_send_cmd(panel, SSD16XX_CMD_MASTER_ACTIVATION, &err);
 		ssd16xx_wait_for_panel(panel);
+
 		panel->temperature_loaded = true;
 	}
 

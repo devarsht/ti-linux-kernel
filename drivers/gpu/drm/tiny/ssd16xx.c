@@ -47,7 +47,65 @@
 #define SSD16XX_CMD_SET_RAM_X_ADDRESS_COUNTER		0x4E
 #define SSD16XX_CMD_SET_RAM_Y_ADDRESS_COUNTER		0x4F
 
-#define SSD16XX_SLEEP_MODE_1				0x01
+/*
+ * Deep Sleep Mode (command 0x10) - from SSD1683 datasheet
+ * After entering deep sleep, BUSY pin stays HIGH.
+ * Exit requires hardware reset (HWRESET).
+ */
+#define SSD16XX_DEEP_SLEEP_MODE_1			0x01  /* Deep Sleep Mode 1 */
+#define SSD16XX_DEEP_SLEEP_MODE_2			0x03  /* Deep Sleep Mode 2 */
+
+/*
+ * Data Entry Mode (command 0x11) - from SSD1683 datasheet
+ * Bits [2:0] = AM, ID1, ID0
+ * - AM: Address direction (0=X direction, 1=Y direction)
+ * - ID[1:0]: Address increment/decrement
+ *   00 = Y decrement, X decrement
+ *   01 = Y decrement, X increment
+ *   10 = Y increment, X decrement
+ *   11 = Y increment, X increment (POR default)
+ */
+#define SSD16XX_DATA_ENTRY_XDEC_YDEC		0x00  /* X--, Y-- */
+#define SSD16XX_DATA_ENTRY_XINC_YDEC		0x01  /* X++, Y-- */
+#define SSD16XX_DATA_ENTRY_XDEC_YINC		0x02  /* X--, Y++ */
+#define SSD16XX_DATA_ENTRY_XINC_YINC		0x03  /* X++, Y++ (default) */
+#define SSD16XX_DATA_ENTRY_YDEC_XDEC		0x04  /* Y--, X-- (Y-direction) */
+#define SSD16XX_DATA_ENTRY_YINC_XDEC		0x05  /* Y++, X-- (Y-direction) */
+#define SSD16XX_DATA_ENTRY_YDEC_XINC		0x06  /* Y--, X++ (Y-direction) */
+#define SSD16XX_DATA_ENTRY_YINC_XINC		0x07  /* Y++, X++ (Y-direction) */
+
+/*
+ * Driver Output Control (command 0x01) byte 3 - from SSD1683 datasheet
+ * Bit 2 (TB): Source shift direction and display direction control
+ * Bit 1 (SM): Gate scan sequence control
+ * Bit 0 (GD): Gate driver output select (first output gate)
+ */
+#define SSD16XX_DRIVER_OUTPUT_TB		BIT(2)  /* Source output mode */
+#define SSD16XX_DRIVER_OUTPUT_SM		BIT(1)  /* Gate scan sequence */
+#define SSD16XX_DRIVER_OUTPUT_GD		BIT(0)  /* 1st output gate */
+
+/*
+ * Border Waveform Control (command 0x3C) - from SSD1683 datasheet
+ * Bits [7:6]: VBD option select
+ *   00 = GS Transition (defined in bits [1:0])
+ *   01 = Fix Level (defined in bits [5:4])
+ *   10 = VCOM
+ *   11 = HiZ (default)
+ * Bits [5:4]: Fix Level for VBD (when bits[7:6]=01)
+ *   00 = VSS, 01 = VSH1, 10 = VSL, 11 = VSH2
+ * Bits [1:0]: GS Transition for VBD (when bits[7:6]=00)
+ *   00 = LUT0, 01 = LUT1, 10 = LUT2, 11 = LUT3
+ */
+#define SSD16XX_BORDER_WAVEFORM_HIZ		0xC0  /* HiZ (default) */
+#define SSD16XX_BORDER_WAVEFORM_LUT0		0x00  /* GS Transition LUT0 */
+#define SSD16XX_BORDER_WAVEFORM_LUT1		0x01  /* GS Transition LUT1 */
+#define SSD16XX_BORDER_WAVEFORM_LUT2		0x02  /* GS Transition LUT2 */
+#define SSD16XX_BORDER_WAVEFORM_LUT3		0x03  /* GS Transition LUT3 */
+#define SSD16XX_BORDER_WAVEFORM_FIXLVL_VSS	0x40  /* Fix Level VSS */
+#define SSD16XX_BORDER_WAVEFORM_FIXLVL_VSH1	0x50  /* Fix Level VSH1 */
+#define SSD16XX_BORDER_WAVEFORM_FIXLVL_VSL	0x60  /* Fix Level VSL */
+#define SSD16XX_BORDER_WAVEFORM_FIXLVL_VSH2	0x70  /* Fix Level VSH2 */
+#define SSD16XX_BORDER_WAVEFORM_VCOM		0x80  /* Follow VCOM */
 
 /*
  * Temperature Sensor Control (command 0x18) value to select internal sensor.
@@ -286,11 +344,11 @@ static const struct ssd16xx_controller_config ssd16xx_controller_configs[] = {
 static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 	[GDEY042T81] = {
 		.red_supported = false,  /* 2-color panel: black/white only */
-		.data_entry_mode = 0x03,  /* Y increment, X increment */
-		.driver_output_ctrl_byte3 = 0x00,
-		.border_waveform_init = 0x05,
-		.border_waveform_partial = 0x80,
-		.deep_sleep_mode = 0x01,
+		.data_entry_mode = SSD16XX_DATA_ENTRY_XINC_YINC,
+		.driver_output_ctrl_byte3 = 0x00,  /* No special flags */
+		.border_waveform_init = SSD16XX_BORDER_WAVEFORM_LUT1,
+		.border_waveform_partial = SSD16XX_BORDER_WAVEFORM_VCOM,
+		.deep_sleep_mode = SSD16XX_DEEP_SLEEP_MODE_1,
 	},
 };
 

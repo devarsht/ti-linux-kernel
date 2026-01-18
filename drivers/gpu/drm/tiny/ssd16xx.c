@@ -1289,6 +1289,43 @@ static void ssd16xx_remove(struct spi_device *spi)
 	drm_atomic_helper_shutdown(drm);
 }
 
+static int __maybe_unused ssd16xx_pm_suspend(struct device *dev)
+{
+	struct drm_device *drm = dev_get_drvdata(dev);
+
+	return drm_mode_config_helper_suspend(drm);
+}
+
+static int __maybe_unused ssd16xx_pm_resume(struct device *dev)
+{
+	struct drm_device *drm = dev_get_drvdata(dev);
+
+	drm_mode_config_helper_resume(drm);
+
+	return 0;
+}
+
+static int __maybe_unused ssd16xx_pm_runtime_suspend(struct device *dev)
+{
+	struct drm_device *drm = dev_get_drvdata(dev);
+
+	return drm_mode_config_helper_suspend(drm);
+}
+
+static int __maybe_unused ssd16xx_pm_runtime_resume(struct device *dev)
+{
+	struct drm_device *drm = dev_get_drvdata(dev);
+
+	drm_mode_config_helper_resume(drm);
+
+	return 0;
+}
+
+static const struct dev_pm_ops ssd16xx_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(ssd16xx_pm_suspend, ssd16xx_pm_resume)
+	SET_RUNTIME_PM_OPS(ssd16xx_pm_runtime_suspend, ssd16xx_pm_runtime_resume, NULL)
+};
+
 static void ssd16xx_shutdown(struct spi_device *spi)
 {
 	struct ssd16xx_panel *panel = spi_get_drvdata(spi);
@@ -1312,6 +1349,7 @@ static struct spi_driver ssd16xx_spi_driver = {
 	.driver = {
 		.name = "ssd16xx",
 		.of_match_table = ssd16xx_of_match,
+		.pm = &ssd16xx_pm_ops,
 	},
 	.probe = ssd16xx_probe,
 	.remove = ssd16xx_remove,

@@ -60,6 +60,20 @@
 #define SSD16XX_TEMP_INTERNAL_SENSOR		0x6E
 
 /*
+ * Temperature Sensor Control (command 0x18) value to select internal sensor.
+ * Bit 7 set = use internal temperature sensor.
+ */
+#define SSD16XX_TEMP_SENSOR_INTERNAL		0x80
+
+/*
+ * Display Update Control 2 (command 0x22) sequence to load temperature and LUT.
+ * Used during fast refresh initialization to preload temperature/LUT.
+ * Bits: ENABLE_CLK | LOAD_LUT | DISABLE_CLK (0x91)
+ * Does not include DISPLAY bit, so no screen update occurs.
+ */
+#define SSD16XX_CTRL2_LOAD_TEMP_LUT		0x91
+
+/*
  * Display Update Control 1 (0x21) byte 1 definitions - from SSD1683 datasheet
  *
  * Byte 1 controls RAM configuration:
@@ -230,10 +244,6 @@ struct ssd16xx_panel_config {
 	 * based on refresh mode and panel type. See ssd16xx_fb_dirty().
 	 */
 
-	/* Temperature Sensor Control */
-	u8 temp_load_sequence;
-	u8 temp_sensor_update;
-
 	/* Deep Sleep Mode */
 	u8 deep_sleep_mode;
 };
@@ -288,8 +298,6 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 		.driver_output_ctrl_byte3 = 0x00,
 		.border_waveform_init = 0x05,
 		.border_waveform_partial = 0x80,
-		.temp_load_sequence = 0x91,
-		.temp_sensor_update = 0x80,
 		.deep_sleep_mode = 0x01,
 	},
 };
@@ -533,9 +541,10 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 	 * Temperature Sensor Selection: Configure controller to use
 	 * internal temperature sensor and automatically select optimal
 	 * waveform from OTP based on measured temperature.
+	 * Using internal sensor (0x80).
 	 */
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_TEMPERATURE_SENSOR_CONTROL, &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->temp_sensor_update, &err);
+	ssd16xx_send_data(panel, SSD16XX_TEMP_SENSOR_INTERNAL, &err);
 
 	/*
 	 * For FAST refresh mode, load temperature and LUT once during initialization.
@@ -570,7 +579,7 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 		 * This loads temperature without triggering display update.
 		 */
 		ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2, &err);
-		ssd16xx_send_data(panel, panel->panel_cfg->temp_load_sequence, &err);
+		ssd16xx_send_data(panel, SSD16XX_CTRL2_LOAD_TEMP_LUT, &err);
 
 		/*
 		 * Master Activation: Execute the temperature/LUT load operation.

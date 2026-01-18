@@ -36,8 +36,6 @@
 #define SSD16XX_CMD_DATA_ENTRY_MODE			0x11
 #define SSD16XX_CMD_SW_RESET				0x12
 #define SSD16XX_CMD_TEMPERATURE_SENSOR_CONTROL		0x18
-#define SSD16XX_CMD_WRITE_TEMP_REGISTER			0x1A
-#define SSD16XX_CMD_READ_TEMP_REGISTER			0x1B
 #define SSD16XX_CMD_MASTER_ACTIVATION			0x20
 #define SSD16XX_CMD_DISPLAY_UPDATE_CONTROL1		0x21
 #define SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2		0x22
@@ -52,16 +50,10 @@
 #define SSD16XX_SLEEP_MODE_1				0x01
 
 /*
- * Temperature register value for internal sensor.
- * When using internal temperature sensor (0x80 with command 0x18),
- * write this value to temperature register (command 0x1A).
- * Value from Seeed GDEY042T81 reference implementation.
- */
-#define SSD16XX_TEMP_INTERNAL_SENSOR		0x6E
-
-/*
  * Temperature Sensor Control (command 0x18) value to select internal sensor.
  * Bit 7 set = use internal temperature sensor.
+ * When internal sensor is selected, controller automatically senses temperature
+ * and selects appropriate LUT - no need to manually write temperature value.
  */
 #define SSD16XX_TEMP_SENSOR_INTERNAL		0x80
 
@@ -567,15 +559,9 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 		ssd16xx_send_data(panel, SSD16XX_CTRL1_BYTE2_DEFAULT, &err);
 
 		/*
-		 * Write temperature value to register.
-		 * Controller uses this for optimal LUT selection.
-		 * Using fixed value for internal sensor (0x6E).
-		 */
-		ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_TEMP_REGISTER, &err);
-		ssd16xx_send_data(panel, SSD16XX_TEMP_INTERNAL_SENSOR, &err);
-
-		/*
 		 * Display Update Control 2: Load temperature and LUT (0x91).
+		 * Since we're using internal sensor, controller automatically
+		 * senses temperature - no need to manually write value.
 		 * This loads temperature without triggering display update.
 		 */
 		ssd16xx_send_cmd(panel, SSD16XX_CMD_DISPLAY_UPDATE_CONTROL2, &err);

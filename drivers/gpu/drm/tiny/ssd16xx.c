@@ -52,6 +52,14 @@
 #define SSD16XX_SLEEP_MODE_1				0x01
 
 /*
+ * Temperature register value for internal sensor.
+ * When using internal temperature sensor (0x80 with command 0x18),
+ * write this value to temperature register (command 0x1A).
+ * Value from Seeed GDEY042T81 reference implementation.
+ */
+#define SSD16XX_TEMP_INTERNAL_SENSOR		0x6E
+
+/*
  * Display Update Control 1 (0x21) byte 1 definitions - from SSD1683 datasheet
  *
  * Byte 1 controls RAM configuration:
@@ -223,7 +231,6 @@ struct ssd16xx_panel_config {
 	 */
 
 	/* Temperature Sensor Control */
-	u8 temp_sensor_control;
 	u8 temp_load_sequence;
 	u8 temp_sensor_update;
 
@@ -281,7 +288,6 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 		.driver_output_ctrl_byte3 = 0x00,
 		.border_waveform_init = 0x05,
 		.border_waveform_partial = 0x80,
-		.temp_sensor_control = 0x6E,
 		.temp_load_sequence = 0x91,
 		.temp_sensor_update = 0x80,
 		.deep_sleep_mode = 0x01,
@@ -554,9 +560,10 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 		/*
 		 * Write temperature value to register.
 		 * Controller uses this for optimal LUT selection.
+		 * Using fixed value for internal sensor (0x6E).
 		 */
 		ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_TEMP_REGISTER, &err);
-		ssd16xx_send_data(panel, panel->panel_cfg->temp_sensor_control, &err);
+		ssd16xx_send_data(panel, SSD16XX_TEMP_INTERNAL_SENSOR, &err);
 
 		/*
 		 * Display Update Control 2: Load temperature and LUT (0x91).

@@ -207,6 +207,15 @@
 
 MODULE_IMPORT_NS("DMA_BUF");
 
+/*
+ * Module parameter to override default refresh mode
+ * Values: 0 = partial, 1 = full, 2 = fast, -1 = use panel default
+ */
+static int refresh_mode_override = -1;
+module_param(refresh_mode_override, int, 0644);
+MODULE_PARM_DESC(refresh_mode_override,
+		 "Override refresh mode (0=partial, 1=full, 2=fast, -1=default)");
+
 enum ssd16xx_controller {
 	SSD1683 = 1,
 };
@@ -217,11 +226,12 @@ enum ssd16xx_model {
 
 /*
  * Refresh mode selection for atomic updates
- * Can be configured via device tree property "refresh-mode"
+ * - Default mode set per panel type in panel config
+ * - Can be overridden at runtime via module parameter
  */
 enum ssd16xx_refresh_mode {
-	SSD16XX_REFRESH_PARTIAL = 0,  /* Partial refresh (default for BW panels) */
-	SSD16XX_REFRESH_FULL,         /* Full refresh (default for 3-color panels) */
+	SSD16XX_REFRESH_PARTIAL = 0,  /* Partial refresh (typical for BW panels) */
+	SSD16XX_REFRESH_FULL,         /* Full refresh (typical for 3-color panels) */
 	SSD16XX_REFRESH_FAST,         /* Fast refresh (skip temperature load) */
 };
 
@@ -295,6 +305,9 @@ struct ssd16xx_panel_config {
 
 	/* Deep Sleep Mode */
 	u8 deep_sleep_mode;
+
+	/* Default refresh mode for this panel type */
+	enum ssd16xx_refresh_mode default_refresh_mode;
 };
 
 struct ssd16xx_error_ctx {
@@ -348,18 +361,20 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 		.driver_output_ctrl_byte3 = 0x00,  /* No special flags */
 		.border_waveform_init = SSD16XX_BORDER_WAVEFORM_VCOM,
 		.deep_sleep_mode = SSD16XX_DEEP_SLEEP_MODE_1,
+		.default_refresh_mode = SSD16XX_REFRESH_PARTIAL,  /* Fast updates for BW panel */
 	},
 };
 
 /*
  * Refresh Mode Strategy (based on Seeed reference implementation):
  *
- * Configurable via device tree property "refresh-mode":
- * - "partial" (default for BW panels)
- * - "full" (default for 3-color panels)
- * - "fast"
+ * Default mode set per panel type in panel config.
+ * Can be overridden via module parameter: refresh_mode_override
+ *   echo 0 > /sys/module/ssd16xx/parameters/refresh_mode_override  # partial
+ *   echo 1 > /sys/module/ssd16xx/parameters/refresh_mode_override  # full
+ *   echo 2 > /sys/module/ssd16xx/parameters/refresh_mode_override  # fast
  *
- * 1. FULL REFRESH MODE (refresh-mode = "full"):
+ * 1. FULL REFRESH MODE:
  *    - Control 1: 0x40 for BW panels (bypass RED RAM), 0x00 for 3-color (enable RED RAM)
  *    - Control 2: 0xF7 (full refresh, loads temperature + LUT)
  *    - LUTs: LUTB/LUTW (8 groups × 4 phases = 32 phases)
@@ -367,7 +382,7 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
  *    - Time: ~1.5-2s
  *    - Use: When highest quality needed, can show red on 3-color panels
  *
- * 2. FAST REFRESH MODE (refresh-mode = "fast"):
+ * 2. FAST REFRESH MODE:
  *    - Control 1: 0x40 (bypass RED RAM)
  *    - Control 2: 0xC7 (fast refresh, uses existing temperature/LUT from init)
  *    - LUTs: LUTB/LUTW (8 groups × 4 phases = 32 phases)
@@ -375,7 +390,7 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
  *    - Time: ~1.0-1.5s (skips temperature load)
  *    - Use: When faster updates needed without temperature reload
  *
- * 3. PARTIAL REFRESH MODE (refresh-mode = "partial"):
+ * 3. PARTIAL REFRESH MODE:
  *    - Control 1: 0x00 (both RAMs enabled for transitions)
  *    - Control 2: 0xFF (partial refresh, loads temperature + LUT)
  *    - LUTs: LUTBB/LUTWB/LUTBW/LUTWW (6 groups × 4 phases = 24 phases)
@@ -1139,7 +1154,6 @@ static int ssd16xx_probe(struct spi_device *spi)
 	const struct spi_device_id *spi_id;
 	const struct drm_display_mode *mode;
 	const void *match;
-	const char *refresh_mode_str;
 	enum ssd16xx_model model;
 	int ret;
 
@@ -1218,30 +1232,22 @@ static int ssd16xx_probe(struct spi_device *spi)
 	panel->width = mode->hdisplay;
 	panel->height = mode->vdisplay;
 
-	/* Parse refresh mode from device tree */
-	ret = device_property_read_string(dev, "refresh-mode", &refresh_mode_str);
-	if (ret == 0) {
-		if (strcmp(refresh_mode_str, "full") == 0) {
-			panel->refresh_mode = SSD16XX_REFRESH_FULL;
-		} else if (strcmp(refresh_mode_str, "fast") == 0) {
-			panel->refresh_mode = SSD16XX_REFRESH_FAST;
-		} else if (strcmp(refresh_mode_str, "partial") == 0) {
-			panel->refresh_mode = SSD16XX_REFRESH_PARTIAL;
-		} else {
-			drm_warn(drm, "Invalid refresh-mode '%s', using default\n", refresh_mode_str);
-			/* Fall through to default */
-			panel->refresh_mode = panel->panel_cfg->red_supported ?
-					      SSD16XX_REFRESH_FULL : SSD16XX_REFRESH_PARTIAL;
-		}
+	/*
+	 * Set refresh mode: panel default or module parameter override
+	 * This is a software policy choice, not hardware description,
+	 * so it doesn't belong in device tree.
+	 */
+	if (refresh_mode_override >= 0 && refresh_mode_override <= 2) {
+		panel->refresh_mode = refresh_mode_override;
+		drm_info(drm, "Using refresh mode override: %s\n",
+			 panel->refresh_mode == SSD16XX_REFRESH_FULL ? "full" :
+			 panel->refresh_mode == SSD16XX_REFRESH_FAST ? "fast" : "partial");
 	} else {
-		/* Default: partial for BW panels, full for 3-color panels */
-		panel->refresh_mode = panel->panel_cfg->red_supported ?
-				      SSD16XX_REFRESH_FULL : SSD16XX_REFRESH_PARTIAL;
+		panel->refresh_mode = panel->panel_cfg->default_refresh_mode;
+		drm_info(drm, "Using panel default refresh mode: %s\n",
+			 panel->refresh_mode == SSD16XX_REFRESH_FULL ? "full" :
+			 panel->refresh_mode == SSD16XX_REFRESH_FAST ? "fast" : "partial");
 	}
-
-	drm_info(drm, "Using %s refresh mode\n",
-		 panel->refresh_mode == SSD16XX_REFRESH_FULL ? "full" :
-		 panel->refresh_mode == SSD16XX_REFRESH_FAST ? "fast" : "partial");
 
 	/* Get GPIOs - reset starts HIGH (inactive), DC starts LOW */
 	panel->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);

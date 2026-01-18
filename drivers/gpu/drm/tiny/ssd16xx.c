@@ -323,6 +323,7 @@ struct ssd16xx_panel {
 	bool partial_mode_ready;
 	bool temperature_loaded;  /* Temperature LUT loaded for fast refresh */
 	bool initialized;
+	bool skip_clear_on_resume;  /* Skip display clear on resume if RAM preserved */
 };
 
 static inline struct ssd16xx_panel *to_ssd16xx_panel(struct drm_device *drm)
@@ -1021,11 +1022,19 @@ static void ssd16xx_pipe_enable(struct drm_simple_display_pipe *pipe,
 	}
 
 	/*
-	 * First full refresh: Clears display and establishes baseline.
-	 * This writes to both BW and RED RAM, setting up the baseline
-	 * needed for subsequent partial refresh operations.
+	 * Clear display to establish baseline, unless BOTH conditions met:
+	 * 1. Resuming from suspend (skip_clear_on_resume = true)
+	 * 2. Baseline is valid (partial_mode_ready = true, i.e., mode 1)
+	 *
+	 * Scenarios:
+	 * - Fresh enable: partial_mode_ready = false → CLEAR
+	 * - Resume mode 1: both true → SKIP CLEAR (RAM preserved)
+	 * - Resume mode 2: partial_mode_ready = false → CLEAR (RAM lost)
 	 */
-	ssd16xx_clear_display(panel);
+	if (!panel->skip_clear_on_resume || !panel->partial_mode_ready) {
+		ssd16xx_clear_display(panel);
+	}
+	panel->skip_clear_on_resume = false;  /* Reset flag after use */
 
 	/*
 	 * Mark partial mode as ready. From this point, fb_dirty() will
@@ -1046,6 +1055,15 @@ static void ssd16xx_pipe_disable(struct drm_simple_display_pipe *pipe)
 	struct ssd16xx_error_ctx err = { .errno_code = 0 };
 
 	panel->initialized = false;
+
+	/*
+	 * Deep sleep mode 2 does NOT preserve RAM content. Reset partial mode
+	 * flag so next enable will clear display to establish new baseline.
+	 * Mode 1 preserves RAM, so baseline remains valid.
+	 */
+	if (panel->panel_cfg->deep_sleep_mode == SSD16XX_DEEP_SLEEP_MODE_2)
+		panel->partial_mode_ready = false;
+
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_DEEP_SLEEP_MODE, &err);
 	ssd16xx_send_data(panel, panel->panel_cfg->deep_sleep_mode, &err);
 }
@@ -1292,6 +1310,14 @@ static void ssd16xx_remove(struct spi_device *spi)
 static int __maybe_unused ssd16xx_pm_suspend(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
+	struct ssd16xx_panel *panel = to_ssd16xx_panel(drm);
+
+	/*
+	 * Mark resume path to potentially skip display clear.
+	 * Mode 1: RAM preserved, partial_mode_ready stays true → skip clear
+	 * Mode 2: RAM lost, partial_mode_ready reset to false → force clear
+	 */
+	panel->skip_clear_on_resume = true;
 
 	return drm_mode_config_helper_suspend(drm);
 }
@@ -1308,6 +1334,13 @@ static int __maybe_unused ssd16xx_pm_resume(struct device *dev)
 static int __maybe_unused ssd16xx_pm_runtime_suspend(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
+	struct ssd16xx_panel *panel = to_ssd16xx_panel(drm);
+
+	/*
+	 * Runtime suspend: Similar to system suspend.
+	 * partial_mode_ready flag handles mode differences.
+	 */
+	panel->skip_clear_on_resume = true;
 
 	return drm_mode_config_helper_suspend(drm);
 }

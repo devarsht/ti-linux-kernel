@@ -218,15 +218,9 @@ struct ssd16xx_panel_config {
 	 *   Bits[7:4] - RED RAM option: 0x0=Normal, 0x4=Bypass, 0x8=Inverse
 	 *   Bits[3:0] - BW RAM option:  0x0=Normal, 0x4=Bypass, 0x8=Inverse
 	 *
-	 * For BW mode panels:
-	 *   init:    0x40 - Bypass RED RAM during initialization (RED RAM undefined)
-	 *   partial: 0x00 - Use both RAMs for transition-based updates
-	 * For 3-color panels:
-	 *   init:    0x00 - Enable both RAMs (required for red pixels)
-	 *   partial: 0x00 - Always use both RAMs
+	 * Note: Control 1 values are determined dynamically at runtime
+	 * based on refresh mode and panel type. See ssd16xx_fb_dirty().
 	 */
-	u8 display_update_ctrl1_init[2];
-	u8 display_update_ctrl1_partial[2];
 
 	/* Temperature Sensor Control */
 	u8 temp_sensor_control;
@@ -287,8 +281,6 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 		.driver_output_ctrl_byte3 = 0x00,
 		.border_waveform_init = 0x05,
 		.border_waveform_partial = 0x80,
-		.display_update_ctrl1_init = { SSD16XX_CTRL1_BYPASS_RED_RAM, SSD16XX_CTRL1_BYTE2_DEFAULT },
-		.display_update_ctrl1_partial = { SSD16XX_CTRL1_NORMAL, SSD16XX_CTRL1_BYTE2_DEFAULT },
 		.temp_sensor_control = 0x6E,
 		.temp_load_sequence = 0x91,
 		.temp_sensor_update = 0x80,

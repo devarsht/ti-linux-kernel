@@ -279,9 +279,8 @@ struct ssd16xx_panel_config {
 	/* Driver Output Control - third byte (scan direction) */
 	u8 driver_output_ctrl_byte3;
 
-	/* Border Waveform Control */
+	/* Border Waveform Control - set once during initialization */
 	u8 border_waveform_init;
-	u8 border_waveform_partial;
 
 	/*
 	 * Display Update Control 1 (command 0x21)
@@ -346,8 +345,7 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 		.red_supported = false,  /* 2-color panel: black/white only */
 		.data_entry_mode = SSD16XX_DATA_ENTRY_XINC_YINC,
 		.driver_output_ctrl_byte3 = 0x00,  /* No special flags */
-		.border_waveform_init = SSD16XX_BORDER_WAVEFORM_LUT1,
-		.border_waveform_partial = SSD16XX_BORDER_WAVEFORM_VCOM,
+		.border_waveform_init = SSD16XX_BORDER_WAVEFORM_VCOM,
 		.deep_sleep_mode = SSD16XX_DEEP_SLEEP_MODE_1,
 	},
 };

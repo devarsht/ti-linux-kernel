@@ -225,4 +225,4 @@ config TINYDRM_SSD16XX
 	  to distinguish between different display modules and configurations
 	  (monochrome vs 3-color).
 
-	  If M is selected the module will be called ssd16xx.
+	  If M is selected the module will be called panel-ssd16xx.

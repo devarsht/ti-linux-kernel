@@ -7403,8 +7403,8 @@ DRM DRIVER FOR SOLOMON SSD16XX E-INK DISPLAYS
 M:	Devarsh Thakkar <devarsht@ti.com>
 S:	Maintained
 T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
-F:	Documentation/devicetree/bindings/display/solomon,ssd16xx.yaml
-F:	drivers/gpu/drm/tiny/ssd16xx.c
+F:	Documentation/devicetree/bindings/display/panel/solomon,ssd16xx.yaml
+F:	drivers/gpu/drm/tiny/panel-ssd16xx.c
 
 DRM DRIVER FOR ST-ERICSSON MCDE
 M:	Linus Walleij <linus.walleij@linaro.org>

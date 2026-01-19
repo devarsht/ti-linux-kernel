@@ -704,6 +704,8 @@ static void ssd16xx_clear_display(struct ssd16xx_panel *panel)
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_BW, &err);
 	ssd16xx_send_data_bulk(panel, white_buffer, data_size, &err);
 
+	ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
+	ssd16xx_send_data_bulk(panel, white_buffer, data_size, &err);
 	/*
 	 * Clear display with FULL REFRESH mode:
 	 * - Display Update Control 1 = BYPASS_RED_RAM
@@ -712,7 +714,7 @@ static void ssd16xx_clear_display(struct ssd16xx_panel *panel)
 	 * - RED RAM not written since it's bypassed
 	 * - Update time: ~1.5-2s
 	 */
-	ssd16xx_display_update(panel, SSD16XX_CTRL1_BYPASS_RED_RAM,
+	ssd16xx_display_update(panel, SSD16XX_CTRL1_NORMAL,
 			       SSD16XX_CTRL1_BYTE2_DEFAULT,
 			       SSD1683_CTRL2_FULL_REFRESH, &err);
 

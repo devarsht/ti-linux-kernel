@@ -639,8 +639,6 @@ static void ssd16xx_display_update(struct ssd16xx_panel *panel,
 	int busy_before;
 
 	/* Wait for panel to be ready BEFORE sending update command */
-	drm_dbg(&panel->drm, "display_update: Waiting for panel ready before update...\n");
-	ssd16xx_wait_for_panel(panel);
 
 	busy_before = gpiod_get_value_cansleep(panel->busy);
 	drm_dbg(&panel->drm, "display_update: Setting ctrl1=0x%02x,0x%02x mode=0x%02x (BUSY=%d)\n",

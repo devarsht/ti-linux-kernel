@@ -216,6 +216,89 @@ module_param(refresh_mode_override, int, 0644);
 MODULE_PARM_DESC(refresh_mode_override,
 		 "Override refresh mode (0=partial, 1=full, 2=fast, -1=default)");
 
+/*
+ * Border waveform mode selection enum for module parameter
+ * Maps user-friendly indices to hardware register values
+ *
+ * Tested on GDEY042T81 panel - border color results:
+ *   BLACK borders: 0(LUT0), 2(LUT2), 4(VSS), 5(VSH1), 7(VSH2), 8(VCOM), 9(HiZ)
+ *   WHITE borders: 1(LUT1) with flash, 6(VSL) with flash (panel polarity quirk)
+ *   GRAY borders:  3(LUT3), -1(default)
+ *
+ * Note: Option 8(VCOM) preserves existing border state without active driving,
+ *       making it ideal for partial refresh after establishing border with LUT1.
+ */
+enum ssd16xx_border_waveform_mode {
+	SSD16XX_BORDER_LUT0 = 0,        /* GS Transition LUT0 (LUTB - black waveform) → BLACK */
+	SSD16XX_BORDER_LUT1,            /* GS Transition LUT1 (LUTW - white waveform) → WHITE + flash */
+	SSD16XX_BORDER_LUT2,            /* GS Transition LUT2 (LUTR - red waveform) → BLACK */
+	SSD16XX_BORDER_LUT3,            /* GS Transition LUT3 (LUTC - common waveform) → GRAY */
+	SSD16XX_BORDER_FIXLVL_VSS,      /* Fix Level VSS (0V) → BLACK */
+	SSD16XX_BORDER_FIXLVL_VSH1,     /* Fix Level VSH1 (+15V) → BLACK */
+	SSD16XX_BORDER_FIXLVL_VSL,      /* Fix Level VSL (-15V) → WHITE + flash (inverted polarity) */
+	SSD16XX_BORDER_FIXLVL_VSH2,     /* Fix Level VSH2 (+15V alt) → BLACK */
+	SSD16XX_BORDER_VCOM,            /* Follow VCOM (-2V~-3V) → Preserves border state */
+	SSD16XX_BORDER_HIZ,             /* HiZ (floating) → BLACK (bistable retention) */
+};
+
+/* Lookup table: enum index to hardware register value */
+static const u8 ssd16xx_border_waveform_values[] = {
+	[SSD16XX_BORDER_LUT0]        = SSD16XX_BORDER_WAVEFORM_LUT0,
+	[SSD16XX_BORDER_LUT1]        = SSD16XX_BORDER_WAVEFORM_LUT1,
+	[SSD16XX_BORDER_LUT2]        = SSD16XX_BORDER_WAVEFORM_LUT2,
+	[SSD16XX_BORDER_LUT3]        = SSD16XX_BORDER_WAVEFORM_LUT3,
+	[SSD16XX_BORDER_FIXLVL_VSS]  = SSD16XX_BORDER_WAVEFORM_FIXLVL_VSS,
+	[SSD16XX_BORDER_FIXLVL_VSH1] = SSD16XX_BORDER_WAVEFORM_FIXLVL_VSH1,
+	[SSD16XX_BORDER_FIXLVL_VSL]  = SSD16XX_BORDER_WAVEFORM_FIXLVL_VSL,
+	[SSD16XX_BORDER_FIXLVL_VSH2] = SSD16XX_BORDER_WAVEFORM_FIXLVL_VSH2,
+	[SSD16XX_BORDER_VCOM]        = SSD16XX_BORDER_WAVEFORM_VCOM,
+	[SSD16XX_BORDER_HIZ]         = SSD16XX_BORDER_WAVEFORM_HIZ,
+};
+
+/*
+ * Module parameter to override border waveform initialization
+ * Values: -1 = use panel default, 0-9 = see enum above
+ *
+ * For WHITE border: Use 1(LUT1, recommended) or 6(VSL)
+ * For BLACK border: Use 0,2,4,5,7,8,9 (recommend 4=VSS or 8=VCOM for low power)
+ * For GRAY border:  Use 3(LUT3) or -1(default)
+ *
+ * Note: VCOM (option 8) preserves border state during refresh, useful after
+ *       establishing white border with LUT1 to avoid flashing on partial updates.
+ */
+static int border_waveform_init_override = -1;
+module_param(border_waveform_init_override, int, 0644);
+MODULE_PARM_DESC(border_waveform_init_override,
+		 "Border waveform (-1=default, 1=WHITE+flash, 8=VCOM preserve, 0/2/4/5/7/9=BLACK, 3=GRAY)");
+
+/*
+ * Module parameter to force border refresh on every partial update
+ * Default: false (border set once during clear, preserved during partial updates)
+ *
+ * Set to true if you want border to actively refresh on every framebuffer update.
+ * This will cause border flashing on every update if using LUT-based modes.
+ * Most users should leave this disabled for better visual experience.
+ */
+static bool border_refresh_every_update = false;
+module_param(border_refresh_every_update, bool, 0644);
+MODULE_PARM_DESC(border_refresh_every_update,
+		 "Force border refresh on every update (default: false, border set once and preserved)");
+
+/*
+ * Module parameter to override border waveform used during partial refresh
+ * Default: -1 (use panel config border_waveform_refresh value)
+ *
+ * Only takes effect when border_refresh_every_update=true.
+ * Use same index values as border_waveform_init_override (0-9).
+ *
+ * Example: Use LUT1 for border refresh on every update:
+ *   modprobe panel_ssd16xx border_refresh_every_update=true border_waveform_refresh_override=1
+ */
+static int border_waveform_refresh_override = -1;
+module_param(border_waveform_refresh_override, int, 0644);
+MODULE_PARM_DESC(border_waveform_refresh_override,
+		 "Override border waveform during refresh (-1=use panel default, 0-9=see border_waveform_init_override)");
+
 enum ssd16xx_controller {
 	SSD1683 = 1,
 };
@@ -292,6 +375,9 @@ struct ssd16xx_panel_config {
 	/* Border Waveform Control - set once during initialization */
 	u8 border_waveform_init;
 
+	/* Border Waveform Control - used during partial refresh when border_refresh_every_update=true */
+	u8 border_waveform_refresh;
+
 	/*
 	 * Display Update Control 1 (command 0x21)
 	 *
@@ -359,7 +445,8 @@ static const struct ssd16xx_panel_config ssd16xx_panel_configs[] = {
 		.red_supported = false,  /* 2-color panel: black/white only */
 		.data_entry_mode = SSD16XX_DATA_ENTRY_XINC_YINC,
 		.driver_output_ctrl_byte3 = 0x00,  /* No special flags */
-		.border_waveform_init = SSD16XX_BORDER_WAVEFORM_VCOM,
+		.border_waveform_init = SSD16XX_BORDER_WAVEFORM_LUT1,
+		.border_waveform_refresh = SSD16XX_BORDER_WAVEFORM_VCOM,  /* Preserve border during partial updates */
 		.deep_sleep_mode = SSD16XX_DEEP_SLEEP_MODE_1,
 		.default_refresh_mode = SSD16XX_REFRESH_PARTIAL,  /* Fast updates for BW panel */
 	},
@@ -597,9 +684,11 @@ static int ssd16xx_hw_init(struct ssd16xx_panel *panel)
 	ssd16xx_send_y_param(panel, panel->height - 1, &err);
 	ssd16xx_send_data(panel, panel->panel_cfg->driver_output_ctrl_byte3, &err);
 
-	/* Border waveform control */
-	ssd16xx_send_cmd(panel, SSD16XX_CMD_BORDER_WAVEFORM_CONTROL, &err);
-	ssd16xx_send_data(panel, panel->panel_cfg->border_waveform_init, &err);
+	/*
+	 * Border waveform control is now set in clear_display() where it's
+	 * actually used. This allows proper sequencing: set init border ->
+	 * perform display update -> switch to refresh border for preservation.
+	 */
 
 	/*
 	 * Temperature Sensor Selection: Configure controller to use
@@ -706,17 +795,57 @@ static void ssd16xx_clear_display(struct ssd16xx_panel *panel)
 
 	ssd16xx_send_cmd(panel, SSD16XX_CMD_WRITE_RAM_RED, &err);
 	ssd16xx_send_data_bulk(panel, white_buffer, data_size, &err);
+
+	/*
+	 * Set border waveform for initial display clear.
+	 * Priority: border_waveform_init_override > panel_cfg->border_waveform_init
+	 *
+	 * For GDEY042T81: panel default is LUT1 (white waveform with temperature
+	 * compensation and cleaning phases).
+	 */
+	u8 border_init_value;
+	if (border_waveform_init_override >= 0 &&
+	    border_waveform_init_override < ARRAY_SIZE(ssd16xx_border_waveform_values)) {
+		border_init_value = ssd16xx_border_waveform_values[border_waveform_init_override];
+		drm_dbg(&panel->drm,
+			"clear_display: Using border init override: index=%d -> 0x%02x\n",
+			border_waveform_init_override, border_init_value);
+	} else {
+		border_init_value = panel->panel_cfg->border_waveform_init;
+		drm_dbg(&panel->drm,
+			"clear_display: Using panel config border init: 0x%02x\n",
+			border_init_value);
+	}
+
+	ssd16xx_send_cmd(panel, SSD16XX_CMD_BORDER_WAVEFORM_CONTROL, &err);
+	ssd16xx_send_data(panel, border_init_value, &err);
+
 	/*
 	 * Clear display with FULL REFRESH mode:
-	 * - Display Update Control 1 = BYPASS_RED_RAM
+	 * - Display Update Control 1 = BYPASS_RED_RAM or NORMAL
 	 * - Display Update Control 2 = FULL_REFRESH (loads temperature + LUT)
-	 * - Uses LUTB/LUTW with 8 groups (32 phases) for clean baseline
-	 * - RED RAM not written since it's bypassed
+	 * - Border uses waveform set above (default: LUT1 white waveform)
 	 * - Update time: ~1.5-2s
 	 */
-	ssd16xx_display_update(panel, SSD16XX_CTRL1_NORMAL,
-			       SSD16XX_CTRL1_BYTE2_DEFAULT,
-			       SSD1683_CTRL2_FULL_REFRESH, &err);
+	if (!panel->panel_cfg->red_supported)
+		ssd16xx_display_update(panel, SSD16XX_CTRL1_BYPASS_RED_RAM,
+				       SSD16XX_CTRL1_BYTE2_DEFAULT,
+				       SSD1683_CTRL2_FULL_REFRESH, &err);
+	else
+		ssd16xx_display_update(panel, SSD16XX_CTRL1_NORMAL,
+				       SSD16XX_CTRL1_BYTE2_DEFAULT,
+				       SSD1683_CTRL2_FULL_REFRESH, &err);
+
+	/*
+	 * After display update, set border to refresh waveform for preservation
+	 * during partial updates. For GDEY042T81: panel default is VCOM which
+	 * preserves border state without flashing and with minimal power.
+	 */
+	ssd16xx_send_cmd(panel, SSD16XX_CMD_BORDER_WAVEFORM_CONTROL, &err);
+	ssd16xx_send_data(panel, panel->panel_cfg->border_waveform_refresh, &err);
+	drm_dbg(&panel->drm,
+		"clear_display: Set border to refresh mode: 0x%02x (for partial updates)\n",
+		panel->panel_cfg->border_waveform_refresh);
 
 	if (err.errno_code)
 		drm_err(&panel->drm, "Clear display failed: %d\n", err.errno_code);
@@ -919,6 +1048,35 @@ static void ssd16xx_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect,
 	ssd16xx_send_data_bulk(panel, mono_buffer, data_size, &err);
 
 	if (panel->partial_mode_ready) {
+		/*
+		 * Optionally refresh border on every update if user requested.
+		 * By default, border is set once during clear_display and preserved.
+		 * Only refresh if border_refresh_every_update module param is enabled.
+		 *
+		 * Border waveform value selection:
+		 * 1. If border_waveform_refresh_override >= 0: use override value
+		 * 2. Else: use panel config border_waveform_refresh
+		 */
+		if (border_refresh_every_update) {
+			u8 border_value;
+
+			if (border_waveform_refresh_override >= 0 &&
+			    border_waveform_refresh_override < ARRAY_SIZE(ssd16xx_border_waveform_values)) {
+				border_value = ssd16xx_border_waveform_values[border_waveform_refresh_override];
+				drm_dbg(&panel->drm,
+					"fb_dirty: Using border refresh override: index=%d -> 0x%02x\n",
+					border_waveform_refresh_override, border_value);
+			} else {
+				border_value = panel->panel_cfg->border_waveform_refresh;
+				drm_dbg(&panel->drm,
+					"fb_dirty: Using panel config border refresh: 0x%02x\n",
+					border_value);
+			}
+
+			ssd16xx_send_cmd(panel, SSD16XX_CMD_BORDER_WAVEFORM_CONTROL, &err);
+			ssd16xx_send_data(panel, border_value, &err);
+		}
+
 		/*
 		 * Atomic updates: Use configured refresh mode from device tree
 		 */
@@ -1250,6 +1408,11 @@ static int ssd16xx_probe(struct spi_device *spi)
 			 panel->refresh_mode == SSD16XX_REFRESH_FULL ? "full" :
 			 panel->refresh_mode == SSD16XX_REFRESH_FAST ? "fast" : "partial");
 	}
+
+	/*
+	 * Border waveform configuration is applied in clear_display() where
+	 * it's actually used. Module parameters take effect there.
+	 */
 
 	/* Get GPIOs - reset starts HIGH (inactive), DC starts LOW */
 	panel->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
